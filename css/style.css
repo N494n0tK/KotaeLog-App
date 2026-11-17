@@ -1202,7 +1202,34 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
 
 /* ---------- 単元の帯 ---------- */
 .unit-strip { margin-top: -4px; margin-bottom: 6px; }
-.unit-chip .ico { width: 14px; height: 14px; stroke-width: 2.8; margin-right: 4px; vertical-align: -2px; animation: pop 0.4s var(--spring); }
+/* 選んでいるタブの下を色の板（.unit-glider）がすべって移動する。2つ以上選んでいるときは板を出さず、チップ自身に色を付ける */
+.unit-strip { position: relative; }
+.unit-strip .chip { z-index: 1; transition: color 0.3s var(--ease); }
+.unit-glider {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 8px 18px -10px var(--accent), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.unit-strip.glide .unit-glider { opacity: 1; }
+.unit-strip.ready .unit-glider { transition: transform 0.55s var(--spring), width 0.55s var(--spring), opacity 0.2s; }
+.unit-strip.glide .chip.on { background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.unit-strip.glide .chip.on::before { opacity: 0; }
+/* タブの下の中身（ホーム）。画面を開いたときは、中の要素を順に出す */
+.view.enter > .tab-body:not(.glass) { animation: none; }
+.view.enter .tab-body > *:not(.glass) { animation: rise 0.6s var(--spring) both; animation-delay: var(--d, 0ms); }
+.tab-body > :nth-child(1) { --d: 40ms; }
+.tab-body > :nth-child(2) { --d: 80ms; }
+.tab-body > :nth-child(3) { --d: 120ms; }
+.tab-body > :nth-child(4) { --d: 160ms; }
+.tab-body > :nth-child(n + 5) { --d: 200ms; }
 .cat-item.off { opacity: 0.55; }
 .hero-range { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .hero-subj { max-width: 100%; }

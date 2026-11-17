@@ -374,22 +374,28 @@
     `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name] || ""}</svg>`;
 
   // ---------- 演出 ----------
-  // 数字のカウントアップ（data-count="数値"）
+  // 数字のカウントアップ（data-count="数値"。data-from があればその数から数える）
   function countUp(root = view) {
     $$("[data-count]", root).forEach((el) => {
+      if (el.dataset.counted) return;
+      el.dataset.counted = "1";
       const to = Number(el.dataset.count) || 0;
-      if (reduceMotion || to === 0) { el.textContent = String(to); return; }
+      const from = Number(el.dataset.from) || 0;
+      if (reduceMotion || to === from) { el.textContent = String(to); return; }
       const t0 = performance.now();
-      const dur = 700 + Math.min(600, to * 6);
-      el.textContent = "0";
+      const dur = el.dataset.from !== undefined ? 520 : 700 + Math.min(600, to * 6);
+      el.textContent = String(from);
       const tick = (now) => {
         const k = Math.min(1, (now - t0) / dur);
-        el.textContent = String(Math.round(to * (1 - Math.pow(1 - k, 3))));
+        el.textContent = String(Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3))));
         if (k < 1 && el.isConnected) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     });
   }
+  // 描き直す前の数字を data-k ごとに覚えておき、描き直したあとの数字の data-from に入れる
+  const readCounts = (root) => Object.fromEntries($$("[data-k]", root).map((el) => [el.dataset.k, el.dataset.count]));
+  const applyFrom = (root, prev) => $$("[data-k]", root).forEach((el) => { if (prev[el.dataset.k] !== undefined) el.dataset.from = prev[el.dataset.k]; });
 
   // .stagger の子を少しずつ遅らせて出す
   function stagger(root = view, base = 60, step = 45) {
@@ -467,6 +473,7 @@
     if (pendingData && name === "home") applyNewData();
     if (!VIEWS[name]) name = "home";
     if (!WORDS.length && !OPEN_WHEN_EMPTY.includes(name)) name = "home";
+    if (name !== "cards" || !params.setup) dropEmptyUnitSel();
     current = name;
     closeSheet();
     closeSubjMenu();
@@ -712,8 +719,20 @@
   // ---------- 単元の選び方（教科ごとに覚えておく。null = すべての単元） ----------
   const unitSel = () => {
     const u = store.settings.units && store.settings.units[SID];
-    return Array.isArray(u) ? u.filter((c) => CATEGORIES.includes(c)) : null;
+    if (!Array.isArray(u)) return null;
+    const f = u.filter((c) => CATEGORIES.includes(c));
+    // 問題の更新で単元名が変わり、選んでいた単元がすべて無くなったときは「すべて」に戻す
+    return u.length && !f.length ? null : f;
   };
+  // 「すべて外す」（0 単元）は暗記カードの範囲の画面の中だけの状態。ほかの画面へ移るときは「すべて」に戻す
+  function dropEmptyUnitSel() {
+    const u = unitSel();
+    if (!u || u.length) return;
+    const units = Object.assign({}, store.settings.units);
+    delete units[SID];
+    store.settings.units = units;
+    save();
+  }
   function setUnitSel(arr) {
     const units = Object.assign({}, store.settings.units);
     if (!arr || arr.length >= CATEGORIES.length) delete units[SID];
@@ -732,29 +751,90 @@
   };
 
   // 単元の帯（ホーム・クイズ）。タブと同じで、タップした単元だけにしぼる（いくつも選ぶのは暗記カードの範囲の画面で）
+  // 選んでいるタブの下を色の板（glider）がすべって移動する。帯そのものは描き直さない
   const unitStrip = () => {
     if (CATEGORIES.length < 2) return "";
     const u = unitSel();
-    return `<div class="chips unit-strip" data-noswipe>
-      <button class="chip glass press ${!u ? "on" : ""}" data-unit-all><span>すべて <span class="chip-n">${WORDS.length}</span></span></button>
-      ${CATEGORIES.map((c) => {
-        const on = !!u && u.includes(c);
-        return `<button class="chip glass press unit-chip ${on ? "on" : ""}" data-unit="${esc(c)}" aria-pressed="${on}"><span>${on ? icon("check") : ""}${esc(c)} <span class="chip-n">${WORDS.filter((w) => w.category === c).length}</span></span></button>`;
-      }).join("")}
+    const chip = (attr, label, n, on) =>
+      `<button class="chip glass press ${on ? "on" : ""}" ${attr} aria-pressed="${on}"><span>${label} <span class="chip-n">${n}</span></span></button>`;
+    return `<div class="chips unit-strip" data-noswipe><span class="unit-glider" aria-hidden="true"></span>
+      ${chip("data-unit-all", "すべて", WORDS.length, !u)}
+      ${CATEGORIES.map((c) => chip(`data-unit="${esc(c)}"`, esc(c), WORDS.filter((w) => w.category === c).length, !!u && u.includes(c))).join("")}
     </div>`;
   };
-  // 帯のタップを処理したら true。横にスクロールした位置は描き直しても保つ
-  function unitStripClick(e, redraw) {
-    const all = e.target.closest("[data-unit-all]");
-    const one = e.target.closest("[data-unit]");
-    if (!all && !one) return false;
-    setUnitSel(all ? null : [one.dataset.unit]);
-    const strip = $(".unit-strip", view);
-    const left = strip ? strip.scrollLeft : 0;
-    redraw();
-    const strip2 = $(".unit-strip", view);
-    if (strip2) strip2.scrollLeft = left;
+
+  // 色の板を、選んでいるタブ（1つだけのとき）の位置へ。animate=false ならその場に置く
+  function placeGlider(strip, animate) {
+    const glider = $(".unit-glider", strip);
+    const on = $$(".chip.on", strip);
+    const glide = !!glider && on.length === 1;
+    strip.classList.toggle("glide", glide);
+    if (!glide) return;
+    const c = on[0];
+    if (!animate || reduceMotion) strip.classList.remove("ready");
+    glider.style.width = `${c.offsetWidth}px`;
+    glider.style.height = `${c.offsetHeight}px`;
+    glider.style.transform = `translate(${c.offsetLeft}px, ${c.offsetTop}px)`;
+    if (!animate || reduceMotion) { void glider.offsetWidth; strip.classList.add("ready"); }
+  }
+
+  // 文字の読み込みや画面の回転でタブの幅が変わったら、板の位置を合わせ直す
+  const stripObserver = "ResizeObserver" in window
+    ? new ResizeObserver((entries) => entries.forEach((en) => { const s = en.target.closest(".unit-strip"); if (s && s.isConnected) placeGlider(s, false); }))
+    : null;
+  if (document.fonts && document.fonts.addEventListener) {
+    document.fonts.addEventListener("loadingdone", () => $$(".unit-strip", view).forEach((s) => placeGlider(s, false)));
+  }
+  function initStrips(root = view) {
+    $$(".unit-strip", root).forEach((s) => {
+      placeGlider(s, false);
+      if (stripObserver) $$(".chip", s).forEach((c) => stripObserver.observe(c));
+    });
+  }
+
+  // 選んだタブが帯の外にはみ出していたら、見える位置までスクロールする
+  function revealChip(strip, chip) {
+    const pad = 28;
+    const l = chip.offsetLeft;
+    const r = l + chip.offsetWidth;
+    if (l - pad < strip.scrollLeft) strip.scrollTo({ left: Math.max(0, l - pad), behavior: "smooth" });
+    else if (r + pad > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: r + pad - strip.clientWidth, behavior: "smooth" });
+  }
+
+  // 帯のタップを処理したら true。onChange(dir) には、右のタブへ移ったら 1、左なら -1 が渡る
+  function unitStripClick(e, onChange) {
+    const btn = e.target.closest("[data-unit-all], [data-unit]");
+    const strip = btn && btn.closest(".unit-strip");
+    if (!strip) return false;
+    const next = btn.hasAttribute("data-unit-all") ? null : [btn.dataset.unit];
+    const cur = unitSel();
+    if (JSON.stringify(cur) === JSON.stringify(next)) return true;
+    const chips = $$(".chip", strip);
+    const from = chips.findIndex((c) => c.classList.contains("on"));
+    const to = chips.indexOf(btn);
+    setUnitSel(next);
+    const u = unitSel();
+    chips.forEach((c) => {
+      const on = c.hasAttribute("data-unit-all") ? !u : !!u && u.includes(c.dataset.unit);
+      c.classList.toggle("on", on);
+      c.setAttribute("aria-pressed", String(on));
+    });
+    placeGlider(strip, true);
+    revealChip(strip, btn);
+    onChange(to >= from ? 1 : -1);
     return true;
+  }
+
+  // タブを切り替えたときに中身を横から差し替える演出（ガラスは自分自身にだけ透明度をかける）
+  const slideIn = (root, dir) => slideEls($$(".glass, .section-title, .count-note", root), dir);
+  function slideEls(els, dir) {
+    if (reduceMotion || !dir) return;
+    els.forEach((el, i) => {
+      el.animate(
+        [{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: "none" }],
+        { duration: 380, delay: Math.min(i, 10) * 18, easing: "cubic-bezier(.22,.8,.24,1)", fill: "backwards" }
+      );
+    });
   }
 
   // ---------- 教科の切り替え ----------
@@ -815,7 +895,7 @@
   // ---------- ホーム ----------
   VIEWS.home = () => {
     view.onclick = (e) => {
-      if (unitStripClick(e, rerender)) return;
+      if (unitStripClick(e, renderHomeBody)) return;
       const t = e.target.closest("[data-go]");
       if (t) return go(t.dataset.go);
       const c2 = e.target.closest("[data-cat-go]");
@@ -834,11 +914,23 @@
       return;
     }
 
+    view.innerHTML = `${unitStrip()}<div class="tab-body" id="homeBody"></div>`;
+    initStrips();
+    renderHomeBody(0);
+  };
+
+  // ホームの中身（単元の帯の下）。dir があれば、タブを切り替えたときの差し替え（数字は前の値から動かす）
+  function renderHomeBody(dir = 0) {
+    const box = $("#homeBody", view);
+    if (!box) return;
+    const prev = dir ? readCounts(box) : null;
+    const oldBar = dir ? $(".ring .bar", box) : null;
     const rw = rangeWords();
     const c = counts(rw);
     const total = rw.length || 1;
     const pct = Math.round((c[MASTERED] / total) * 100);
     const R = 48, L = 2 * Math.PI * R;
+    const startOffset = oldBar ? oldBar.style.strokeDashoffset || L : L;
     const h = new Date().getHours();
     const greet = h < 5 ? "夜更かしの<br>ひと勉強" : h < 11 ? "おはよう。<br>朝の1セット" : h < 17 ? "すきま時間に<br>コツコツと" : "今日の仕上げに<br>もう一歩";
     const weak = WORDS.filter((w) => isWeak(w.word)).length;
@@ -846,33 +938,33 @@
     const streak = summary().streak;
     const tile = (go, ico, name, desc) =>
       `<button class="tile glass press" data-go="${go}"><span class="tile-ico">${icon(ico)}</span><span><div class="tile-name">${name}</div><div class="tile-desc">${desc}</div></span></button>`;
+    const num = (k, v) => `<span data-k="${k}" data-count="${v}">${v}</span>`;
 
-    view.innerHTML = `
-      ${unitStrip()}
+    box.innerHTML = `
       <section class="hero glass">
         <div class="ring">
           <svg viewBox="0 0 112 112">
             <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
             <circle class="track" cx="56" cy="56" r="${R}" fill="none" stroke-width="10"/>
-            <circle class="bar" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L}"/>
+            <circle class="bar" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L}" style="stroke-dashoffset:${startOffset}"/>
           </svg>
-          <div class="ring-label"><div><b><span data-count="${pct}">${pct}</span><span style="font-size:15px">%</span></b><small>習得率</small></div></div>
+          <div class="ring-label"><div><b>${num("pct", pct)}<span style="font-size:15px">%</span></b><small>習得率</small></div></div>
         </div>
         <div class="hero-stats">
           <div class="hero-subj"><span class="subj-dot"></span><span class="hero-range">${esc(SUBJ.name)} ・ ${esc(rangeLabel())}</span></div>
           <div class="hero-greet">${greet}</div>
           <div class="stat-row">
-            <span class="stat"><span class="dot c-mastered"></span>覚えた <b>${c[MASTERED]}</b></span>
-            <span class="stat"><span class="dot c-learning"></span>学習中 <b>${c[LEARNING]}</b></span>
-            <span class="stat"><span class="dot c-new"></span>未学習 <b>${c[NEW]}</b></span>
+            <span class="stat"><span class="dot c-mastered"></span>覚えた <b>${num("m", c[MASTERED])}</b></span>
+            <span class="stat"><span class="dot c-learning"></span>学習中 <b>${num("l", c[LEARNING])}</b></span>
+            <span class="stat"><span class="dot c-new"></span>未学習 <b>${num("n", c[NEW])}</b></span>
           </div>
         </div>
       </section>
 
       <div class="kpis stagger">
-        <div class="kpi glass">${icon("calendar")}<b><span data-count="${sm.tn}">${sm.tn}</span><em>問</em></b><small>今日の解答</small></div>
-        <div class="kpi glass">${icon("flame")}<b><span data-count="${streak}">${streak}</span><em>日</em></b><small>連続学習</small></div>
-        <div class="kpi glass">${icon("target")}<b>${sm.n ? `<span data-count="${rate(sm.ok, sm.n)}">${rate(sm.ok, sm.n)}</span><em>%</em>` : "–"}</b><small>正答率</small></div>
+        <div class="kpi glass">${icon("calendar")}<b>${num("tn", sm.tn)}<em>問</em></b><small>今日の解答</small></div>
+        <div class="kpi glass">${icon("flame")}<b>${num("streak", streak)}<em>日</em></b><small>連続学習</small></div>
+        <div class="kpi glass">${icon("target")}<b>${sm.n ? `${num("rate", rate(sm.ok, sm.n))}<em>%</em>` : "–"}</b><small>正答率</small></div>
       </div>
 
       <div class="section-title">学習する</div>
@@ -899,11 +991,17 @@
         }).join("")}
       </div>`;
 
+    if (dir) {
+      applyFrom(box, prev);
+      stagger(box);
+      countUp(box);
+      slideIn(box, dir);
+    }
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const bar = $(".ring .bar", view);
+      const bar = $(".ring .bar", box);
       if (bar) bar.style.strokeDashoffset = String(L * (1 - c[MASTERED] / total));
     }));
-  };
+  }
 
   // ---------- 暗記カード ----------
   // 2 段階：範囲を決める画面（単元にチェック・出すカード・表の面・順番）→ めくる画面
@@ -986,27 +1084,58 @@
       </div>`;
     stagger();
 
+    // 押したところだけその場で書き換える（全体を描き直すと、チェック済みの印がすべて弾み直してしまう）
     view.onclick = (e) => {
       const u = e.target.closest("[data-unit-toggle]");
       if (u) {
         const cat = u.dataset.unitToggle;
         const cur = unitSel() || [...CATEGORIES];
         setUnitSel(cur.includes(cat) ? cur.filter((c) => c !== cat) : [...cur, cat]);
-        return renderCardSetup();
+        return syncCardSetup();
       }
       const all = e.target.closest("[data-units]");
-      if (all) { setUnitSel(all.dataset.units === "all" ? null : []); return renderCardSetup(); }
+      if (all) { setUnitSel(all.dataset.units === "all" ? null : []); return syncCardSetup(); }
       const f = e.target.closest("[data-filter]");
-      if (f) { st.cardFilter = f.dataset.filter; save(); deck = null; return renderCardSetup(); }
+      if (f) { st.cardFilter = f.dataset.filter; save(); deck = null; return syncCardSetup(); }
       const md = e.target.closest("[data-mode-card]");
-      if (md) { st.cardMode = md.dataset.modeCard; save(); return renderCardSetup(); }
+      if (md) { st.cardMode = md.dataset.modeCard; save(); return syncCardSetup(); }
       const od = e.target.closest("[data-order]");
-      if (od) { st.cardShuffle = od.dataset.order === "1"; save(); deck = null; return renderCardSetup(); }
+      if (od) { st.cardShuffle = od.dataset.order === "1"; save(); deck = null; return syncCardSetup(); }
       const act = e.target.closest("[data-act]");
       if (!act) return;
       if (act.dataset.act === "start") { buildDeck(); cardOpts.stage = "study"; enterAnim(); renderCardStudy(); }
       else if (act.dataset.act === "resume") { cardOpts.stage = "study"; enterAnim(); renderCardStudy(); }
     };
+  }
+
+  // 範囲を決める画面を、今の設定に合わせてその場で書き換える
+  function syncCardSetup() {
+    const st = store.settings;
+    const rw = rangeWords();
+    const n = setupWords().length;
+    const allOn = !unitSel();
+    $$("[data-unit-toggle]", view).forEach((r) => {
+      const on = unitOn(r.dataset.unitToggle);
+      r.classList.toggle("on", on);
+      r.setAttribute("aria-checked", String(on));
+    });
+    const ub = $("[data-units]", view);
+    if (ub) { ub.dataset.units = allOn ? "none" : "all"; ub.textContent = allOn ? "すべて外す" : "すべて選ぶ"; }
+    $$("[data-filter]", view).forEach((b) => {
+      const k = b.dataset.filter;
+      b.classList.toggle("on", st.cardFilter === k);
+      const cn = $(".chip-n", b);
+      if (cn) cn.textContent = rw.filter((w) => cardFilterFn(k)(prog(w.word))).length;
+    });
+    $$("[data-mode-card]", view).forEach((b) => b.classList.toggle("on", st.cardMode === b.dataset.modeCard));
+    $$("[data-order]", view).forEach((b) => b.classList.toggle("on", (st.cardShuffle !== false ? "1" : "0") === b.dataset.order));
+    const start = $("[data-act=start]", view);
+    if (start) {
+      start.disabled = !n;
+      start.innerHTML = `<span>${icon("cards")}${n ? `${n}枚で始める` : "該当するカードがありません"}</span>`;
+    }
+    const resume = $("[data-act=resume]", view);
+    if (resume && !(deck && !deck.custom && deck.i > 0 && deck.i < deck.list.length)) resume.remove();
   }
 
   // ----- めくる画面 -----
@@ -1124,9 +1253,14 @@
     scene.insertAdjacentHTML("afterbegin", flipHtml(next, "queued"));
   }
 
+  // 同じボタンの素早い2度押し（ダブルタップ）で2枚まとめて判定しないように、直後の押下は無視する
+  let lastAnswerAt = 0;
   function answerCard(known, btn) {
     const flip = $("#flip");
     if (!flip) return;
+    const now = performance.now();
+    if (now - lastAnswerAt < 200) return;
+    lastAnswerAt = now;
     const w = deck.list[deck.i];
     const p = prog(w.word);
     // 「1枚戻る」で元に戻せるように、記録する前の状態をとっておく
@@ -1269,16 +1403,29 @@
       <div style="height:26px"></div>
       <button class="btn primary block press" data-act="start" ${pool.length < 2 ? "disabled" : ""}><span>スタート（${Math.min(st.quizCount, pool.length)}問）</span></button>
       <div class="btn-row"><button class="btn glass press" data-act="weak"><span>${icon("flag")}苦手から出題</span></button></div>`;
+    initStrips();
+
+    // 範囲・問題数を変えたら、その場で語数とスタートボタンだけ書き換える（帯や画面は描き直さない）
+    const refresh = (dir = 0) => {
+      const p = rangeWords();
+      const note = $(".count-note", view);
+      note.textContent = `${rangeLabel()} ・ ${p.length}語`;
+      const start = $("[data-act=start]", view);
+      start.disabled = p.length < 2;
+      $("span", start).textContent = `スタート（${Math.min(st.quizCount, p.length)}問）`;
+      slideEls([note], dir);
+    };
+    const pick = (btn, attr) => $$(`[${attr}]`, view).forEach((b) => b.classList.toggle("on", b === btn));
 
     view.onclick = (e) => {
-      if (unitStripClick(e, renderQuizSetup)) return;
+      if (unitStripClick(e, refresh)) return;
       const cnt = e.target.closest("[data-count-opt]");
-      if (cnt) { st.quizCount = Number(cnt.dataset.countOpt); save(); return renderQuizSetup(); }
+      if (cnt) { st.quizCount = Number(cnt.dataset.countOpt); save(); pick(cnt, "data-count-opt"); return refresh(); }
       const md = e.target.closest("[data-mode]");
-      if (md) { st.quizMode = md.dataset.mode; save(); return renderQuizSetup(); }
+      if (md) { st.quizMode = md.dataset.mode; save(); return pick(md, "data-mode"); }
       const act = e.target.closest("[data-act]");
       if (!act) return;
-      if (act.dataset.act === "start") startQuiz(shuffle(pool).slice(0, st.quizCount));
+      if (act.dataset.act === "start") startQuiz(shuffle(rangeWords()).slice(0, st.quizCount));
       else {
         const weak = WORDS.filter((w) => isWeak(w.word));
         if (!weak.length) return toast("苦手な語はまだありません");
@@ -1319,10 +1466,12 @@
       </div>
       <div id="fb"></div>`;
     stagger(view, 80, 50);
+    // 「次へ」を素早く2回押したとき、2回目が次の問題の選択肢に当たって勝手に答えないようにする
+    const shownAt = performance.now();
 
     view.onclick = (e) => {
       const b = e.target.closest("[data-opt]");
-      if (b && q.answered === null) return answerQuiz(Number(b.dataset.opt));
+      if (b && q.answered === null && performance.now() - shownAt > 350) return answerQuiz(Number(b.dataset.opt));
       if (e.target.closest("[data-act=next]")) { quiz.i++; renderQuestion(); }
     };
   }
@@ -1618,6 +1767,7 @@
       </div>`;
     const msg = (text) => {
       const m = $("#dataMsg");
+      if (!m) return text && toast(text); // 読み込み中にほかの画面へ移っていたらトーストで知らせる
       m.textContent = text;
       m.hidden = !text;
     };
@@ -1628,11 +1778,12 @@
       return DATA.refresh(token).then(
         (changed) => {
           if (token) DATA.setToken(token);
+          const here = current === "settings"; // 読み込み中にほかの画面へ移っていたら、画面は動かさない
           if (changed) {
-            applyNewData();
-            toast("問題を読み込みました");
-            go(token ? "home" : "settings");
-          } else { toast("最新です"); rerender(); }
+            if (here) { applyNewData(); go(token ? "home" : "settings"); }
+            else pendingData = true;
+            toast(here ? "問題を読み込みました" : "新しい問題を取得しました。ホームに戻ると反映されます");
+          } else { toast("最新です"); if (here) rerender(); }
         },
         (err) => msg(err.message),
       );
@@ -1709,18 +1860,27 @@
     go(b.dataset.nav);
   });
 
-  const EDGE = 28; // iOS Safari の「戻る」スワイプが反応する左端の幅
+  // ホーム画面アプリ（全画面）かどうか。ブラウザの「戻る」スワイプ対策はブラウザで開いたときだけ要る
+  const standalone = navigator.standalone === true ||
+    window.matchMedia("(display-mode: standalone)").matches ||
+    window.matchMedia("(display-mode: fullscreen)").matches;
+
+  const EDGE = 24; // iOS Safari の「戻る」スワイプが反応する左端の幅
   let g = null;
 
   document.addEventListener("touchstart", (e) => {
     if (e.touches.length !== 1) { g = null; return; }
     const t = e.touches[0];
-    const edge = t.clientX < EDGE || t.clientX > window.innerWidth - EDGE;
-    // 画面端から始まるタッチは既定動作（＝ブラウザの戻る/進む）を止める
-    if (edge && !e.target.closest("input")) e.preventDefault();
+    // ブラウザで開いているときだけ、左端から始まるタッチの既定動作（＝戻る）を止める。
+    // ホーム画面アプリには戻るスワイプが無いので止めない（止めると端の近くでスクロールやタップが効かなくなる）
+    const edge = !standalone && t.clientX < EDGE && !e.target.closest("input, [data-noswipe]");
+    if (edge) e.preventDefault();
+    const scroller = e.target.closest("[data-noswipe]");
     g = {
       x0: t.clientX, y0: t.clientY, x: t.clientX, t0: performance.now(),
-      edge, mode: null, open: isOpen(), target: e.target,
+      edge, mode: null, open: isOpen(), scroller,
+      // 横にスクロールできる帯を、左へ戻せる位置から触ったか（そのときは帯のスクロールを優先する）
+      scrolled: !!scroller && scroller.scrollLeft > 1,
       w: drawer.getBoundingClientRect().width + 24,
     };
   }, { passive: false });
@@ -1733,12 +1893,12 @@
     g.x = t.clientX;
 
     if (g.mode === null) {
-      // 右向きの横スワイプは、方向が決まる前の最初の動きから既定動作（ブラウザの戻る）を止める
-      if (!g.open && dx > 0 && Math.abs(dx) >= Math.abs(dy) && !sheetOpen()) e.preventDefault();
+      // はっきり右向きの横スワイプだけ、方向が決まる前から既定動作を止める（縦スクロールを巻き込まないように）。
+      // 横にスクロールした帯の上では止めない（止めると帯を左へ戻せなくなる）
+      if (!g.open && !g.scrolled && dx >= 3 && dx > Math.abs(dy) * 2 && !sheetOpen()) e.preventDefault();
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       const horizontal = Math.abs(dx) > Math.abs(dy) * 1.15;
-      const scroller = g.target.closest && g.target.closest("[data-noswipe]");
-      const scrollerAtStart = !scroller || scroller.scrollLeft <= 1;
+      const scrollerAtStart = !g.scroller || (!g.scrolled && g.scroller.scrollLeft <= 1);
       if (horizontal && ((!g.open && dx > 0 && scrollerAtStart) || (g.open && dx < 0)) && !sheetOpen()) {
         g.mode = "drawer";
         body.classList.add("dragging");
@@ -1797,9 +1957,6 @@
   // 履歴ガード：戻る操作が起きてもページを離れず、サイドバーの開閉に置き換える
   // ホーム画面アプリでは履歴が無ければスワイプで戻れないので、履歴を一切作らない
   // （ガード用の履歴を積むと、それ自体が「戻る」先になってしまう）
-  const standalone = navigator.standalone === true ||
-    window.matchMedia("(display-mode: standalone)").matches ||
-    window.matchMedia("(display-mode: fullscreen)").matches;
   const GUARD = { kotaelogGuard: true };
   const armGuard = () => {
     if (standalone) return;
