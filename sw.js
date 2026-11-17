@@ -1,5 +1,5 @@
 // ネットワーク優先・失敗時のみキャッシュ（単語データを追加したらすぐ反映されるように）
-const CACHE = "gendaibun-v2";
+const CACHE = "kotaelog-v1";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {
@@ -12,6 +12,8 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  // 問題データ（GitHub API）は js/data.js が端末に保存するので、ここでは扱わない
+  if (new URL(e.request.url).hostname === "api.github.com") return;
   // ブラウザの HTTP キャッシュも通さず、毎回サーバーに更新を確認する
   const req = e.request.mode === "navigate"
     ? new Request(e.request.url, { cache: "no-cache", credentials: "same-origin" })

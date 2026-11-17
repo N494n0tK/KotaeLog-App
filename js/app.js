@@ -4,7 +4,8 @@
 (() => {
   "use strict";
 
-  // ---------- データ ----------
+  // ---------- データ（js/data.js が KotaeLog-Que から読み込んだもの） ----------
+  const DATA = window.KOTAE_DATA;
   const WORDS = (() => {
     const seen = new Set();
     const seenNo = new Set();
@@ -211,6 +212,8 @@
   const TITLES = { home: "ホーム", cards: "単語カード", quiz: "4択クイズ", list: "単語一覧", weak: "苦手な単語", settings: "設定" };
 
   function go(name, params = {}) {
+    // 問題データがまだ無いときは、ホームと設定だけ開ける
+    if (!WORDS.length && name !== "settings") name = "home";
     current = name;
     closeSheet();
     titleEl.textContent = TITLES[name] || "";
@@ -376,6 +379,19 @@
 
   // ---------- ホーム ----------
   VIEWS.home = () => {
+    if (!WORDS.length) {
+      view.innerHTML = `
+        <div class="glass setting">
+          <h3>問題データを読み込みましょう</h3>
+          <p>問題は非公開のリポジトリ <code>${esc(DATA.repo)}</code> にあります。設定画面で読み取り用のトークンを入力すると、この端末に問題が読み込まれます（端末ごとに最初の1回だけ）。</p>
+          <button class="btn glass press primary block" data-go="settings"><span>設定を開く</span></button>
+        </div>`;
+      view.onclick = (e) => {
+        const t = e.target.closest("[data-go]");
+        if (t) go(t.dataset.go);
+      };
+      return;
+    }
     const c = counts();
     const total = WORDS.length || 1;
     const pct = Math.round((c[MASTERED] / total) * 100);
@@ -892,14 +908,34 @@
 
   // ---------- 設定 ----------
   VIEWS.settings = () => {
+    const at = DATA.fetchedAt();
+    const atLabel = at ? new Date(at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    const subjects = DATA.subjects();
     view.innerHTML = `
       <div class="glass setting">
+        <h3>問題データ</h3>
+        <p>${DATA.hasData()
+          ? `${subjects.map((s) => `${esc(s.name)}（${s.items.length}）`).join(" / ")}<br>最終取得：${esc(atLabel)}`
+          : "まだ読み込んでいません。"}</p>
+        ${DATA.hasToken()
+          ? `<div class="btn-row">
+               <button class="btn glass press primary" data-act="refresh"><span>今すぐ更新</span></button>
+               <button class="btn glass press" data-act="forget"><span>トークンを削除</span></button>
+             </div>`
+          : `<label class="search glass">
+               <input id="tokenIn" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+             </label>
+             <button class="btn glass press primary block" data-act="save" style="margin-top:10px"><span>保存して読み込む</span></button>
+             <p style="margin-top:12px">トークンの作り方：GitHub の <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token の作成画面</a> で、Repository access を「Only select repositories → ${esc(DATA.repo.split("/")[1])}」、Permissions の Contents を「Read-only」にして作成します。トークンはこの端末の中にだけ保存されます。</p>`}
+        <p id="dataMsg" style="margin:10px 0 0" hidden></p>
+      </div>
+      ${WORDS.length ? `<div class="glass setting">
         <h3>収録データ</h3>
         <p>${WORDS.length}語 ・ ${CATEGORIES.length}カテゴリ<br>${CATEGORIES.map(esc).join(" / ")}</p>
-      </div>
+      </div>` : ""}
       <div class="glass setting">
-        <h3>単語の追加</h3>
-        <p><code>data/words.js</code> の配列に <code>{ no, word, reading, meaning, example, category }</code> を追加すると自動で反映されます。</p>
+        <h3>問題の追加</h3>
+        <p><code>${esc(DATA.repo)}</code> の <code>subjects/</code> にある JSON に問題を足して push すると、次にアプリを開いたとき（または「今すぐ更新」）に反映されます。</p>
       </div>
       <div class="glass setting">
         <h3>ホーム画面に追加</h3>
@@ -910,7 +946,36 @@
         <p>すべての進み具合・★をこの端末から消去します。</p>
         <button class="btn glass press tint-bad block" data-act="reset"><span>リセットする</span></button>
       </div>`;
+    const msg = (text) => {
+      const m = $("#dataMsg");
+      m.textContent = text;
+      m.hidden = !text;
+    };
+    const load = (token) => {
+      msg("読み込み中…");
+      return DATA.refresh(token).then(
+        (changed) => {
+          if (token) DATA.setToken(token);
+          if (changed) { toast("問題を読み込みました"); setTimeout(() => location.reload(), 500); }
+          else { toast("最新です"); VIEWS.settings(); }
+        },
+        (err) => msg(err.message),
+      );
+    };
     view.onclick = (e) => {
+      const act = e.target.closest("[data-act]");
+      if (act && act.dataset.act === "save") {
+        const token = $("#tokenIn").value.trim();
+        if (!token) return msg("トークンを貼り付けてください。");
+        return load(token);
+      }
+      if (act && act.dataset.act === "refresh") return load();
+      if (act && act.dataset.act === "forget") {
+        if (!confirm("この端末からトークンを削除しますか？（読み込み済みの問題と学習記録は残ります）")) return;
+        DATA.clearToken();
+        toast("トークンを削除しました");
+        return VIEWS.settings();
+      }
       if (!e.target.closest("[data-act=reset]")) return;
       if (!confirm("学習記録をすべて消去しますか？")) return;
       store.progress = {};
@@ -1067,6 +1132,16 @@
 
   // ---------- 起動 ----------
   go("home");
+
+  // 裏で最新の問題を取りに行く。変わっていたら、ホームにいるときだけすぐ読み込み直す
+  // （学習の途中で画面が切り替わらないように。それ以外は次に開いたときに反映）
+  if (DATA.hasToken()) {
+    DATA.refresh().then((changed) => {
+      if (!changed) return;
+      if (current === "home" && !sheetOpen() && !isOpen()) location.reload();
+      else toast("新しい問題を取得しました。開き直すと反映されます");
+    }, () => { /* オフラインなどは保存済みの問題で続ける */ });
+  }
 
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
     window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
