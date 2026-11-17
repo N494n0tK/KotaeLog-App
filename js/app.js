@@ -731,7 +731,7 @@
     return u.length === 1 ? u[0] : `${u[0]} ほか${u.length - 1}単元`;
   };
 
-  // 単元の帯（ホーム・クイズ）。タップした単元にしぼり、続けてタップすると足していく
+  // 単元の帯（ホーム・クイズ）。タブと同じで、タップした単元だけにしぼる（いくつも選ぶのは暗記カードの範囲の画面で）
   const unitStrip = () => {
     if (CATEGORIES.length < 2) return "";
     const u = unitSel();
@@ -748,14 +748,7 @@
     const all = e.target.closest("[data-unit-all]");
     const one = e.target.closest("[data-unit]");
     if (!all && !one) return false;
-    if (all) setUnitSel(null);
-    else {
-      const c = one.dataset.unit;
-      const u = unitSel();
-      if (!u) setUnitSel([c]);
-      else if (u.includes(c)) setUnitSel(u.length === 1 ? null : u.filter((x) => x !== c));
-      else setUnitSel([...u, c]);
-    }
+    setUnitSel(all ? null : [one.dataset.unit]);
     const strip = $(".unit-strip", view);
     const left = strip ? strip.scrollLeft : 0;
     redraw();

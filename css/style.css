@@ -1108,7 +1108,7 @@ body.dragging .drawer-nav li, body.dragging .drawer-subj { animation: none; }
 @media (prefers-color-scheme: dark) {
   .subj-pill, .subj-card, .sheet-stats > div, .seg-ctl, .subj-select, .icon-chip, .card-check { background: rgba(255, 255, 255, 0.1); }
   .subj-opt.on { background: color-mix(in srgb, var(--c1) 26%, transparent); }
-  .unit-row + .unit-row { box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.08); }
+  .unit-row + .unit-row::before { background: rgba(255, 255, 255, 0.1); }
   .subj-card.on { background: linear-gradient(140deg, color-mix(in srgb, var(--c1) 34%, transparent), color-mix(in srgb, var(--c2) 22%, transparent)); }
   .seg-ctl button.on { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
   .kpi .ico, .setting h3 .ico { color: color-mix(in oklab, var(--accent) 60%, white); }
@@ -1211,9 +1211,12 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
 .setup-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; }
 .setup-head .section-title { margin: 0 4px; }
 .text-btn { padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.unit-list { padding: 4px 6px; --radius: 24px; }
-.unit-row { width: 100%; display: flex; align-items: center; gap: 14px; padding: 12px 10px; border-radius: 18px; text-align: left; --radius: 18px; }
-.unit-row + .unit-row { box-shadow: 0 -1px 0 var(--rule); }
+.unit-list { padding: 0; --radius: 24px; overflow: hidden; }
+/* 行は角を丸めず、押しても縮めない（光だけ）。カードの角でそろって切り取られる */
+.unit-row { position: relative; width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 18px; text-align: left; --press-scale: 1; }
+.unit-row.is-pressed { translate: none; box-shadow: none; }
+/* 仕切り：チェックの右から端までの一本の細い線 */
+.unit-row + .unit-row::before { content: ""; position: absolute; top: 0; left: 58px; right: 0; height: 1px; background: var(--rule); z-index: 2; pointer-events: none; }
 .unit-row > * { position: relative; z-index: 2; }
 .unit-row .grow { flex: 1; min-width: 0; display: grid; }
 .unit-row b { font-size: 15px; }
