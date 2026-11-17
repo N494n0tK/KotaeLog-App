@@ -1,7 +1,7 @@
 {
-  "name": "現代文単語",
-  "short_name": "現代文単語",
-  "description": "スマホで学ぶ現代文単語",
+  "name": "コタエログ",
+  "short_name": "コタエログ",
+  "description": "全教科の一問一答を覚えて記録する学習アプリ",
   "lang": "ja",
   "start_url": "./",
   "scope": "./",
