@@ -48,12 +48,17 @@
     ["#d95926", "#f2a21b"], ["#9a7a00", "#d4a72c"], ["#c8467a", "#f07a8a"],
   ];
   const isHex = (c) => typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c);
-  const SUBJECTS = DATA.subjects().map((s, i) => ({
-    id: String(s.id),
-    name: String(s.name),
-    color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
-    words: normalize(s.items, s.name),
-  }));
+  // 教科の一覧（新しい問題を取得したら作り直す）
+  let SUBJECTS = [];
+  function loadSubjects() {
+    SUBJECTS = DATA.subjects().map((s, i) => ({
+      id: String(s.id),
+      name: String(s.name),
+      color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+      words: normalize(s.items, s.name),
+    }));
+  }
+  loadSubjects();
   const subjectById = (id) => SUBJECTS.find((s) => s.id === id) || null;
   const subjStyle = (s) => `--c1:${s.color[0]};--c2:${s.color[1]}`;
   const subjInitial = (s) => [...s.name][0] || "?";
@@ -74,7 +79,7 @@
   const STATUS_LABEL = ["未学習", "学習中", "覚えた"];
   const STATUS_CLASS = ["c-new", "c-learning", "c-mastered"];
 
-  let store = { progress: {}, log: [], settings: { quizCount: 10, quizMode: "mix", cardMode: "w2m", cardFilter: "all", subject: "" } };
+  let store = { progress: {}, log: [], settings: { quizCount: 10, quizMode: "mix", cardMode: "w2m", cardFilter: "all", cardShuffle: true, subject: "", units: {} } };
   try {
     let saved = JSON.parse(localStorage.getItem(STORE_KEY));
     if (!saved) {
@@ -362,6 +367,8 @@
     refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
     chevR: '<path d="m9.5 6 6 6-6 6"/>',
     chevD: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
+    checkc: '<circle cx="12" cy="12" r="8.5"/><path d="m8.4 12.3 2.5 2.5 4.8-5.1"/>',
+    undo: '<path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/>',
   };
   const icon = (name, cls = "") =>
     `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name] || ""}</svg>`;
@@ -457,10 +464,12 @@
   }
 
   function go(name, params = {}) {
+    if (pendingData && name === "home") applyNewData();
     if (!VIEWS[name]) name = "home";
     if (!WORDS.length && !OPEN_WHEN_EMPTY.includes(name)) name = "home";
     current = name;
     closeSheet();
+    closeSubjMenu();
     setTitle(TITLES[name] || "");
     badgeEl.textContent = "";
     $$("#drawerNav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
@@ -494,18 +503,49 @@
     $("#drawerSub").textContent = SUBJ ? `${SUBJ.name} ・ ${WORDS.length}語中 ${c[MASTERED]}語 習得` : "問題を読み込んでください";
   }
 
-  // 教科チップ（ホームの帯・サイドバーで共通）
-  const subjChip = (s) =>
-    `<button class="subj-chip press ${s.id === SID ? "on" : ""}" data-subject="${esc(s.id)}" style="${subjStyle(s)}"><span class="subj-dot"></span><span>${esc(s.name)}</span><span class="subj-chip-n">${s.words.length}</span></button>`;
+  // 教科の選択肢（右上のプルダウン・サイドバーのプルダウンで共通）
+  const subjOpt = (s) => {
+    const on = s.id === SID;
+    const m = masteredIn(s);
+    return `<button class="subj-opt press ${on ? "on" : ""}" data-subject="${esc(s.id)}" role="menuitemradio" aria-checked="${on}" style="${subjStyle(s)}">
+      <span class="subj-ini sm">${esc(subjInitial(s))}</span>
+      <span class="grow"><b>${esc(s.name)}</b><small>${s.words.length ? `${s.words.length}語 ・ 習得 ${rate(m, s.words.length)}%` : "準備中"}</small></span>
+      <span class="subj-tick">${icon("check")}</span>
+    </button>`;
+  };
 
-  // トップバーの教科ボタンとサイドバーの教科一覧を今の教科に合わせる
+  // トップバーの教科ボタン・サイドバーの教科プルダウンを今の教科に合わせる
   function renderChrome() {
     const pill = $("#subjPill");
     pill.hidden = !SUBJ;
-    if (SUBJ) $("#subjName").textContent = SUBJ.name;
-    $("#drawerSubjWrap").hidden = SUBJECTS.length < 2;
-    $("#drawerSubjects").innerHTML = SUBJECTS.map((s) => `<li>${subjChip(s)}</li>`).join("");
+    if (SUBJ) {
+      $("#subjName").textContent = SUBJ.name;
+      $("#drawerSubjName").textContent = SUBJ.name;
+      $("#drawerSubjIni").textContent = subjInitial(SUBJ);
+      $("#drawerSubjBtn").setAttribute("style", subjStyle(SUBJ));
+    }
+    $("#drawerSubjWrap").hidden = !SUBJECTS.length;
+    $("#drawerSubjects").innerHTML = SUBJECTS.map(subjOpt).join("");
+    $("#subjMenu").innerHTML = `<div class="menu-title">教科</div>${SUBJECTS.map(subjOpt).join("")}`;
     updateDrawerSub();
+  }
+
+  // 右上の教科プルダウン
+  const subjMenuOpen = () => document.body.classList.contains("menu-open");
+  function openSubjMenu() {
+    renderChrome();
+    document.body.classList.add("menu-open");
+    $("#subjPill").setAttribute("aria-expanded", "true");
+    $$("#subjMenu .subj-opt").forEach((b, i) => b.style.setProperty("--i", i));
+  }
+  function closeSubjMenu() {
+    document.body.classList.remove("menu-open");
+    $("#subjPill").setAttribute("aria-expanded", "false");
+  }
+  // サイドバーの教科プルダウン（開くと下に選択肢が出る）
+  function toggleDrawerSubj(open = !$("#drawerSubjWrap").classList.contains("open")) {
+    $("#drawerSubjWrap").classList.toggle("open", open);
+    $("#drawerSubjBtn").setAttribute("aria-expanded", String(open));
   }
 
   // ---------- 部品 ----------
@@ -525,7 +565,7 @@
   };
 
   const starBtn = (word, on) =>
-    `<button class="star ${on ? "on" : ""}" data-star="${esc(word)}" aria-label="★（苦手リスト）" aria-pressed="${on}">${icon("star")}</button>`;
+    `<button class="star ${on ? "on" : ""}" data-star="${esc(word)}" aria-label="チェック（苦手に入る）" aria-pressed="${on}">${icon("checkc")}</button>`;
 
   const wordRow = (w) => {
     const p = prog(w.word);
@@ -552,7 +592,7 @@
         star.classList.toggle("on", on);
         star.setAttribute("aria-pressed", String(on));
         if (on) popStar(star);
-        toast(on ? "★ 苦手リストに追加" : "苦手リストから外しました");
+        toast(on ? "チェックをつけました（苦手に入ります）" : "チェックを外しました");
         onChange && onChange();
         return;
       }
@@ -591,7 +631,7 @@
         ${p.h ? `<div class="hist-row"><span>直近の結果</span>${histDots(p.h)}</div>` : ""}
         <div class="status-seg">${STATUS_LABEL.map((l, i) => `<button data-s="${i}" class="${(p.s || 0) === i ? "on" : ""}">${l}</button>`).join("")}</div>
         <div class="btn-row">
-          <button class="btn small glass press" data-act="star"><span>${icon("star")}${p.star ? "苦手から外す" : "苦手に追加"}</span></button>
+          <button class="btn small glass press" data-act="star"><span>${icon("checkc")}${p.star ? "チェックを外す" : "チェックをつける"}</span></button>
           <button class="btn small glass press" data-act="close"><span>閉じる</span></button>
         </div>
         </div>`;
@@ -612,32 +652,6 @@
         render();
         onChange && onChange();
       } else closeSheet();
-    };
-    sheetWrap.classList.add("open");
-  }
-
-  // 教科を選ぶシート
-  function openSubjectSheet() {
-    sheet.innerHTML = `
-      <div class="grab-zone" aria-label="下に引っ張って閉じる"><div class="grabber"></div></div>
-      <div class="sheet-body">
-        <div class="sheet-title">教科を選ぶ</div>
-        <div class="subj-grid stagger">${SUBJECTS.map((s) => {
-          const m = masteredIn(s);
-          return `<button class="subj-card press ${s.id === SID ? "on" : ""}" data-subject="${esc(s.id)}" style="${subjStyle(s)}">
-            <span class="subj-ini">${esc(subjInitial(s))}</span>
-            <span class="subj-card-name">${esc(s.name)}</span>
-            <span class="subj-card-sub">${s.words.length ? `${s.words.length}語 ・ 習得 ${rate(m, s.words.length)}%` : "準備中"}</span>
-            ${s.id === SID ? `<span class="subj-check">${icon("check")}</span>` : ""}
-          </button>`;
-        }).join("")}</div>
-      </div>`;
-    stagger(sheet, 120, 40);
-    sheet.onclick = (e) => {
-      const b = e.target.closest("[data-subject]");
-      if (!b) return;
-      closeSheet();
-      switchSubject(b.dataset.subject, e.clientX, e.clientY);
     };
     sheetWrap.classList.add("open");
   }
@@ -695,7 +709,60 @@
       ${extra}
     </div>`;
 
-  const subjStrip = () => (SUBJECTS.length > 1 ? `<div class="chips subj-strip" data-noswipe>${SUBJECTS.map(subjChip).join("")}</div>` : "");
+  // ---------- 単元の選び方（教科ごとに覚えておく。null = すべての単元） ----------
+  const unitSel = () => {
+    const u = store.settings.units && store.settings.units[SID];
+    return Array.isArray(u) ? u.filter((c) => CATEGORIES.includes(c)) : null;
+  };
+  function setUnitSel(arr) {
+    const units = Object.assign({}, store.settings.units);
+    if (!arr || arr.length >= CATEGORIES.length) delete units[SID];
+    else units[SID] = arr;
+    store.settings.units = units;
+    save();
+    deck = null;
+  }
+  const unitOn = (c) => { const u = unitSel(); return !u || u.includes(c); };
+  const rangeWords = () => WORDS.filter((w) => unitOn(w.category));
+  const rangeLabel = () => {
+    const u = unitSel();
+    if (!u) return "すべての単元";
+    if (!u.length) return "単元を選んでください";
+    return u.length === 1 ? u[0] : `${u[0]} ほか${u.length - 1}単元`;
+  };
+
+  // 単元の帯（ホーム・クイズ）。タップした単元にしぼり、続けてタップすると足していく
+  const unitStrip = () => {
+    if (CATEGORIES.length < 2) return "";
+    const u = unitSel();
+    return `<div class="chips unit-strip" data-noswipe>
+      <button class="chip glass press ${!u ? "on" : ""}" data-unit-all><span>すべて <span class="chip-n">${WORDS.length}</span></span></button>
+      ${CATEGORIES.map((c) => {
+        const on = !!u && u.includes(c);
+        return `<button class="chip glass press unit-chip ${on ? "on" : ""}" data-unit="${esc(c)}" aria-pressed="${on}"><span>${on ? icon("check") : ""}${esc(c)} <span class="chip-n">${WORDS.filter((w) => w.category === c).length}</span></span></button>`;
+      }).join("")}
+    </div>`;
+  };
+  // 帯のタップを処理したら true。横にスクロールした位置は描き直しても保つ
+  function unitStripClick(e, redraw) {
+    const all = e.target.closest("[data-unit-all]");
+    const one = e.target.closest("[data-unit]");
+    if (!all && !one) return false;
+    if (all) setUnitSel(null);
+    else {
+      const c = one.dataset.unit;
+      const u = unitSel();
+      if (!u) setUnitSel([c]);
+      else if (u.includes(c)) setUnitSel(u.length === 1 ? null : u.filter((x) => x !== c));
+      else setUnitSel([...u, c]);
+    }
+    const strip = $(".unit-strip", view);
+    const left = strip ? strip.scrollLeft : 0;
+    redraw();
+    const strip2 = $(".unit-strip", view);
+    if (strip2) strip2.scrollLeft = left;
+    return true;
+  }
 
   // ---------- 教科の切り替え ----------
   function switchSubject(id, x = innerWidth / 2, y = 90) {
@@ -705,8 +772,7 @@
     save();
     deck = null;
     quiz = null;
-    cardOpts.cat = "all";
-    quizOpts.cat = "all";
+    cardOpts.stage = "setup";
     listOpts.cat = "all";
     themeWave(x, y);
     renderChrome();
@@ -714,15 +780,53 @@
     toast(`${SUBJ.name}に切り替えました`);
   }
 
+  // ---------- 新しい問題の反映 ----------
+  // ページを読み込み直さず、その場で差し替える。
+  // （iOS のホーム画面アプリでは、キーボードが出たまま読み込み直すと上のバーが下にずれたまま残るため）
+  let pendingData = false;
+  function applyNewData() {
+    pendingData = false;
+    loadSubjects();
+    useSubject(store.settings.subject || SID);
+    deck = null;
+    quiz = null;
+    cardOpts.stage = "setup";
+    listOpts.cat = "all";
+    renderChrome();
+  }
+
+  // ---------- iOS：固定表示のずれを直す ----------
+  // キーボードを閉じたあとや、アプリに戻ってきたときに、上のバーなど position: fixed の要素が
+  // キーボードの高さぶんずれたまま残ることがある。1px だけスクロールして戻し、位置を合わせ直させる
+  function resyncViewport() {
+    setTimeout(() => {
+      const y = window.scrollY;
+      window.scrollTo(0, y + 1);
+      window.scrollTo(0, y);
+    }, 80);
+  }
+  document.addEventListener("focusout", (e) => {
+    if (e.target.matches && e.target.matches("input, textarea")) resyncViewport();
+  });
+  if (window.visualViewport) {
+    let vvh = window.visualViewport.height;
+    window.visualViewport.addEventListener("resize", () => {
+      const h = window.visualViewport.height;
+      if (h > vvh + 80) resyncViewport(); // キーボードが閉じた
+      vvh = h;
+    });
+  }
+  window.addEventListener("pageshow", resyncViewport);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resyncViewport(); });
+
   // ---------- ホーム ----------
   VIEWS.home = () => {
     view.onclick = (e) => {
-      const s = e.target.closest("[data-subject]");
-      if (s) return switchSubject(s.dataset.subject, e.clientX, e.clientY);
+      if (unitStripClick(e, rerender)) return;
       const t = e.target.closest("[data-go]");
       if (t) return go(t.dataset.go);
       const c2 = e.target.closest("[data-cat-go]");
-      if (c2) go("cards", { cat: c2.dataset.catGo });
+      if (c2) { setUnitSel([c2.dataset.catGo]); go("cards", { setup: true }); }
     };
 
     if (!DATA.hasData() || !SUBJECTS.length) {
@@ -732,13 +836,14 @@
       return;
     }
     if (!WORDS.length) {
-      view.innerHTML = `${subjStrip()}${emptyCard("book", `${esc(SUBJ.name)}の問題はまだありません`,
-        `KotaeLog-Que の <code>subjects/${esc(SID)}.json</code> に問題を追加すると、ここに出てきます。`)}`;
+      view.innerHTML = emptyCard("book", `${esc(SUBJ.name)}の問題はまだありません`,
+        `KotaeLog-Que の <code>subjects/${esc(SID)}.json</code> に問題を追加すると、ここに出てきます。右上の教科ボタンからほかの教科に切り替えられます。`);
       return;
     }
 
-    const c = counts();
-    const total = WORDS.length || 1;
+    const rw = rangeWords();
+    const c = counts(rw);
+    const total = rw.length || 1;
     const pct = Math.round((c[MASTERED] / total) * 100);
     const R = 48, L = 2 * Math.PI * R;
     const h = new Date().getHours();
@@ -750,7 +855,7 @@
       `<button class="tile glass press" data-go="${go}"><span class="tile-ico">${icon(ico)}</span><span><div class="tile-name">${name}</div><div class="tile-desc">${desc}</div></span></button>`;
 
     view.innerHTML = `
-      ${subjStrip()}
+      ${unitStrip()}
       <section class="hero glass">
         <div class="ring">
           <svg viewBox="0 0 112 112">
@@ -761,7 +866,7 @@
           <div class="ring-label"><div><b><span data-count="${pct}">${pct}</span><span style="font-size:15px">%</span></b><small>習得率</small></div></div>
         </div>
         <div class="hero-stats">
-          <div class="hero-subj"><span class="subj-dot"></span>${esc(SUBJ.name)}</div>
+          <div class="hero-subj"><span class="subj-dot"></span><span class="hero-range">${esc(SUBJ.name)} ・ ${esc(rangeLabel())}</span></div>
           <div class="hero-greet">${greet}</div>
           <div class="stat-row">
             <span class="stat"><span class="dot c-mastered"></span>覚えた <b>${c[MASTERED]}</b></span>
@@ -779,8 +884,8 @@
 
       <div class="section-title">学習する</div>
       <div class="tiles stagger">
-        ${tile("cards", "cards", "暗記カード", "めくって覚える")}
-        ${tile("quiz", "quiz", "4択クイズ", `${store.settings.quizCount}問でチェック`)}
+        ${tile("cards", "cards", "暗記カード", `${rw.length}語をめくる`)}
+        ${tile("quiz", "quiz", "4択クイズ", `${Math.min(store.settings.quizCount, rw.length)}問でチェック`)}
         ${tile("list", "list", "一覧", `${WORDS.length}語を検索`)}
         ${tile("weak", "flag", "苦手", `${weak}語を復習`)}
       </div>
@@ -791,7 +896,7 @@
         ${CATEGORIES.map((cat) => {
           const ws = WORDS.filter((w) => w.category === cat);
           const m = counts(ws)[MASTERED];
-          return `<button class="cat-item glass press" data-cat-go="${esc(cat)}">
+          return `<button class="cat-item glass press ${unitOn(cat) ? "" : "off"}" data-cat-go="${esc(cat)}">
             <div class="grow">
               <div class="row-top"><span class="cat-name">${esc(cat)}</span><span class="cat-count">${m} / ${ws.length}</span></div>
               <div class="mini-bar"><i class="grow-x" style="width:${(m / ws.length) * 100}%"></i></div>
@@ -808,62 +913,123 @@
   };
 
   // ---------- 暗記カード ----------
-  const cardOpts = { cat: "all", shuffle: true };
+  // 2 段階：範囲を決める画面（単元にチェック・出すカード・表の面・順番）→ めくる画面
+  const cardOpts = { stage: "setup" };
   let deck = null;
 
-  // カードの絞り込み（学習状況で出す語を選ぶ）
+  // 出すカード（学習状況で絞り込む）
   const CARD_FILTERS = [
     ["all", "すべて", () => true],
     ["new", "未学習", (p) => (p.s || NEW) === NEW],
-    ["missed", "ミスした", (p) => p.ng > 0 && p.s !== MASTERED],
     ["unmastered", "未習得", (p) => p.s !== MASTERED],
+    ["missed", "ミスした", (p) => p.ng > 0 && p.s !== MASTERED],
     ["mastered", "覚えた", (p) => p.s === MASTERED],
-    ["star", "★", (p) => !!p.star],
+    ["star", "チェック", (p) => !!p.star],
   ];
   const cardFilterFn = (key) => (CARD_FILTERS.find(([k]) => k === key) || CARD_FILTERS[0])[2];
-  const inCat = (w) => cardOpts.cat === "all" || w.category === cardOpts.cat;
+  const setupWords = () => rangeWords().filter((w) => cardFilterFn(store.settings.cardFilter)(prog(w.word)));
 
   function buildDeck(words) {
-    const match = cardFilterFn(store.settings.cardFilter);
-    let ws = words || WORDS.filter((w) => inCat(w) && match(prog(w.word)));
-    if (cardOpts.shuffle) ws = shuffle(ws);
-    deck = { list: ws, i: 0, known: 0, unknown: 0, missed: [], custom: !!words };
-  }
-
-  function filterChips() {
-    const ws = WORDS.filter(inCat);
-    return `<div class="chips" data-noswipe>${CARD_FILTERS.map(([k, label, fn]) => {
-      const n = ws.filter((w) => fn(prog(w.word))).length;
-      return `<button class="chip glass press ${store.settings.cardFilter === k ? "on" : ""}" data-filter="${k}"><span>${label} <span class="chip-n">${n}</span></span></button>`;
-    }).join("")}</div>`;
+    let ws = words || setupWords();
+    if (store.settings.cardShuffle !== false) ws = shuffle(ws);
+    deck = { list: ws, i: 0, known: 0, unknown: 0, missed: [], hist: [], custom: !!words };
   }
 
   VIEWS.cards = (params = {}) => {
-    if (params.cat) { cardOpts.cat = params.cat; deck = null; }
-    if (params.words) buildDeck(params.words);
-    if (!deck) buildDeck();
+    if (params.words) { buildDeck(params.words); cardOpts.stage = "study"; }
+    else if (params.setup || !deck) cardOpts.stage = "setup";
     renderCards();
   };
 
-  function renderCards() {
+  const renderCards = () => (cardOpts.stage === "setup" ? renderCardSetup() : renderCardStudy());
+
+  // ----- 範囲を決める画面 -----
+  function renderCardSetup() {
+    badgeEl.textContent = "";
+    const st = store.settings;
+    const rw = rangeWords();
+    const n = setupWords().length;
+    const allOn = !unitSel();
+    view.innerHTML = `
+      <div class="setup-head">
+        <div class="section-title">単元</div>
+        <button class="text-btn press" data-units="${allOn ? "none" : "all"}">${allOn ? "すべて外す" : "すべて選ぶ"}</button>
+      </div>
+      <div class="glass unit-list">
+        ${CATEGORIES.map((cat) => {
+          const ws = WORDS.filter((w) => w.category === cat);
+          const m = counts(ws)[MASTERED];
+          const on = unitOn(cat);
+          return `<button class="unit-row press ${on ? "on" : ""}" data-unit-toggle="${esc(cat)}" role="checkbox" aria-checked="${on}">
+            <span class="checkbox">${icon("check")}</span>
+            <span class="grow">
+              <span class="row-top"><b>${esc(cat)}</b><span class="cat-count">${m} / ${ws.length}</span></span>
+              <span class="mini-bar"><i style="width:${(m / ws.length) * 100}%"></i></span>
+            </span>
+          </button>`;
+        }).join("")}
+      </div>
+
+      <div class="section-title">出すカード</div>
+      <div class="seg">${CARD_FILTERS.map(([k, label, fn]) => {
+        const c = rw.filter((w) => fn(prog(w.word))).length;
+        return `<button class="chip glass press ${st.cardFilter === k ? "on" : ""}" data-filter="${k}"><span>${k === "star" ? icon("checkc") : ""}${label} <span class="chip-n">${c}</span></span></button>`;
+      }).join("")}</div>
+
+      <div class="setup-grid">
+        <div>
+          <div class="section-title">表に出す面</div>
+          <div class="seg-ctl">${[["w2m", "語"], ["m2w", "意味"]].map(([v, l]) => `<button class="${st.cardMode === v ? "on" : ""}" data-mode-card="${v}">${l}</button>`).join("")}</div>
+        </div>
+        <div>
+          <div class="section-title">順番</div>
+          <div class="seg-ctl">${[["1", "シャッフル"], ["0", "番号順"]].map(([v, l]) => `<button class="${(st.cardShuffle !== false ? "1" : "0") === v ? "on" : ""}" data-order="${v}">${l}</button>`).join("")}</div>
+        </div>
+      </div>
+
+      <div class="start-bar">
+        <button class="btn primary block press" data-act="start" ${n ? "" : "disabled"}><span>${icon("cards")}${n ? `${n}枚で始める` : "該当するカードがありません"}</span></button>
+        ${deck && !deck.custom && deck.i > 0 && deck.i < deck.list.length ? `<button class="btn glass block press" data-act="resume"><span>続きから（${deck.i + 1} / ${deck.list.length}枚目）</span></button>` : ""}
+      </div>`;
+    stagger();
+
+    view.onclick = (e) => {
+      const u = e.target.closest("[data-unit-toggle]");
+      if (u) {
+        const cat = u.dataset.unitToggle;
+        const cur = unitSel() || [...CATEGORIES];
+        setUnitSel(cur.includes(cat) ? cur.filter((c) => c !== cat) : [...cur, cat]);
+        return renderCardSetup();
+      }
+      const all = e.target.closest("[data-units]");
+      if (all) { setUnitSel(all.dataset.units === "all" ? null : []); return renderCardSetup(); }
+      const f = e.target.closest("[data-filter]");
+      if (f) { st.cardFilter = f.dataset.filter; save(); deck = null; return renderCardSetup(); }
+      const md = e.target.closest("[data-mode-card]");
+      if (md) { st.cardMode = md.dataset.modeCard; save(); return renderCardSetup(); }
+      const od = e.target.closest("[data-order]");
+      if (od) { st.cardShuffle = od.dataset.order === "1"; save(); deck = null; return renderCardSetup(); }
+      const act = e.target.closest("[data-act]");
+      if (!act) return;
+      if (act.dataset.act === "start") { buildDeck(); cardOpts.stage = "study"; enterAnim(); renderCardStudy(); }
+      else if (act.dataset.act === "resume") { cardOpts.stage = "study"; enterAnim(); renderCardStudy(); }
+    };
+  }
+
+  // ----- めくる画面 -----
+  function renderCardStudy() {
     const total = deck.list.length;
-    let head = deck.custom
-      ? `<div class="count-note">${deck.list.length}枚を復習中</div>`
-      : `${catChips(cardOpts.cat)}${filterChips()}`;
-    // 表に出す面の切り替え（タップするたびに 語→意味 / 意味→語 が入れ替わる）
-    const dirChip = `<button class="chip glass press" data-dir aria-label="表に出す面を切り替え"><span>${icon("swap")}${store.settings.cardMode === "m2w" ? "意味 → 語" : "語 → 意味"}</span></button>`;
-    head += deck.custom
-      ? `<div class="toggles">${dirChip}</div>`
-      : `
-        <div class="toggles">
-          ${dirChip}
-          <button class="chip glass press ${cardOpts.shuffle ? "on" : ""}" data-opt="shuffle"><span>${icon("shuffle")}シャッフル</span></button>
-        </div>`;
+    const head = `
+      <div class="study-bar">
+        <button class="chip glass press range-chip" data-act="setup"><span>${icon("sliders")}${deck.custom ? `苦手 ${total}枚` : esc(rangeLabel())}</span></button>
+        <button class="icon-chip glass press" data-act="undo" aria-label="1枚戻る" ${deck.hist.length ? "" : "disabled"}>${icon("undo")}</button>
+        <button class="icon-chip glass press" data-dir aria-label="表と裏を入れ替える">${icon("swap")}</button>
+      </div>`;
 
     if (!total) {
       badgeEl.textContent = "";
-      view.innerHTML = `${head}${emptyCard("sparkle", "該当する語がありません", store.settings.cardFilter === "missed" ? "ミスした語はありません。" : "条件を変えてみてください。")}`;
-      bindCardHead();
+      view.innerHTML = `${head}${emptyCard("sparkle", "該当するカードがありません", "範囲を変えてみてください。", `<button class="btn primary block press" data-act="setup"><span>範囲を変える</span></button>`)}`;
+      bindCardStudy();
       return;
     }
 
@@ -878,11 +1044,11 @@
           ${deck.missed.length ? `<button class="btn primary block press" data-act="missed"><span>「まだ」の${deck.missed.length}枚をもう一度</span></button><div style="height:10px"></div>` : ""}
           <button class="btn ${deck.missed.length ? "glass" : "primary"} block press" data-act="again"><span>もう一度</span></button>
           <div class="btn-row">
+            <button class="btn glass press" data-act="setup"><span>範囲を変える</span></button>
             <button class="btn glass press" data-act="quiz"><span>クイズで確認</span></button>
-            <button class="btn glass press" data-act="home"><span>ホーム</span></button>
           </div>
         </div>`;
-      bindCardHead();
+      bindCardStudy();
       if (!deck.unknown) setTimeout(() => burst($(".badge-ico", view), 18), 250);
       return;
     }
@@ -897,17 +1063,24 @@
       <div class="answer-row">
         <button class="btn glass press tint-bad" data-ans="0"><span>${icon("x")}まだ</span></button>
         <button class="btn glass press tint-good" data-ans="1"><span>${icon("check")}覚えた</span></button>
-      </div>`;
-    bindCardHead();
+      </div>
+      <div class="study-tally"><span><i class="dot c-mastered"></i>覚えた <b id="tallyK">${deck.known}</b></span><span><i class="dot c-learning"></i>まだ <b id="tallyU">${deck.unknown}</b></span></div>`;
+    bindCardStudy();
     requestAnimationFrame(preloadNext);
   }
 
+  // カード右上のチェック（苦手リストに入る印）
+  const cardCheck = (w) => {
+    const on = !!prog(w.word).star;
+    return `<button class="card-check ${on ? "on" : ""}" data-check="${esc(w.word)}" aria-label="チェック" aria-pressed="${on}">${icon("checkc")}</button>`;
+  };
+
   function cardFace(w, back, enter = "") {
     const s = statusOf(w.word);
+    const tag = `<span class="tag"><i class="dot ${STATUS_CLASS[s]}"></i>${w.no !== null ? `${esc(noLabel(w))} ・ ` : ""}${esc(w.category)}</span>`;
     if (!back) {
       return `<div class="face glass press ${enter}" data-flip>
-        <span class="tag">${w.no !== null ? `${esc(noLabel(w))} ・ ` : ""}${esc(w.category)}</span>
-        <span class="status-dot ${STATUS_CLASS[s]}"></span>
+        ${tag}${cardCheck(w)}
         ${store.settings.cardMode === "m2w"
           ? `<div class="front-meaning">${esc(w.meaning)}</div>
         <div class="tap-hint">タップで語を表示</div>`
@@ -916,7 +1089,7 @@
       </div>`;
     }
     return `<div class="face back glass press is-hidden" data-flip>
-      <span class="tag">${w.no !== null ? `${esc(noLabel(w))} ・ ` : ""}${esc(w.category)}</span>
+      ${tag}${cardCheck(w)}
       <div class="back-word fit" style="${fitLen(w)}">${esc(w.word)}</div>
       <div class="back-reading">${esc(w.reading)}</div>
       <div class="back-meaning">${esc(w.meaning)}</div>
@@ -963,6 +1136,9 @@
     if (!flip) return;
     const w = deck.list[deck.i];
     const p = prog(w.word);
+    // 「1枚戻る」で元に戻せるように、記録する前の状態をとっておく
+    const before = progMap()[w.word];
+    deck.hist.push({ i: deck.i, word: w.word, prev: before ? Object.assign({}, before) : null, logLen: store.log.length, known });
     if (known) {
       logAnswer(w.word, true, "c", { s: MASTERED, ok: (p.ok || 0) + 1 });
       deck.known++;
@@ -989,7 +1165,7 @@
 
     deck.i++;
     if (deck.i >= deck.list.length) {
-      setTimeout(() => current === "cards" && renderCards(), 240);
+      setTimeout(() => current === "cards" && cardOpts.stage === "study" && renderCardStudy(), 240);
       return;
     }
 
@@ -1004,52 +1180,83 @@
     badgeEl.textContent = `${deck.i + 1} / ${deck.list.length}`;
     const bar = $(".progress-line i", view);
     if (bar) bar.style.width = `${(deck.i / deck.list.length) * 100}%`;
+    const tk = $("#tallyK"), tu = $("#tallyU");
+    if (tk) tk.textContent = deck.known;
+    if (tu) tu.textContent = deck.unknown;
+    const undo = $("[data-act=undo]", view);
+    if (undo) undo.disabled = false;
 
     // 3) 飛ばすアニメーションが走り出してから、さらに次のカードを裏で用意する
     requestAnimationFrame(() => requestAnimationFrame(preloadNext));
   }
 
-  function bindCardHead() {
+  // 1枚戻る：直前の判定を取り消して、そのカードをもう一度出す
+  function undoCard() {
+    const h = deck && deck.hist.pop();
+    if (!h) return;
+    if (h.prev) progMap()[h.word] = h.prev;
+    else delete progMap()[h.word];
+    if (store.log.length === h.logLen + 1) store.log.pop();
+    save();
+    deck.i = h.i;
+    if (h.known) deck.known--;
+    else { deck.unknown--; deck.missed.pop(); }
+    renderCardStudy();
+    const face = $("#flip .face", view);
+    if (face && !reduceMotion) face.animate([{ transform: `translateX(${h.known ? 40 : -40}%) rotate(${h.known ? 6 : -6}deg)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 380, easing: "cubic-bezier(.2,.8,.3,1)" });
+  }
+
+  function toggleCheck(word) {
+    const on = !prog(word).star;
+    setProg(word, { star: on });
+    $$(`[data-check]`, view).forEach((b) => {
+      if (b.dataset.check !== word) return;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+    const b = $(`#flip [data-check]`, view);
+    if (on && b) popStar(b);
+    toast(on ? "チェックをつけました（苦手に入ります）" : "チェックを外しました");
+  }
+
+  function bindCardStudy() {
     view.onclick = (e) => {
-      const cat = e.target.closest("[data-cat]");
-      if (cat) { cardOpts.cat = cat.dataset.cat; buildDeck(); return renderCards(); }
-      const dir = e.target.closest("[data-dir]");
-      if (dir) {
+      const chk = e.target.closest("[data-check]");
+      if (chk) return toggleCheck(chk.dataset.check);
+      if (e.target.closest("[data-dir]")) {
         store.settings.cardMode = store.settings.cardMode === "m2w" ? "w2m" : "m2w";
         save();
-        return renderCards();
-      }
-      const filter = e.target.closest("[data-filter]");
-      if (filter) {
-        store.settings.cardFilter = filter.dataset.filter;
-        save();
-        buildDeck();
-        return renderCards();
-      }
-      const opt = e.target.closest("[data-opt]");
-      if (opt) {
-        cardOpts.shuffle = !cardOpts.shuffle;
-        deck.custom ? buildDeck(deck.list) : buildDeck();
-        return renderCards();
+        toast(store.settings.cardMode === "m2w" ? "表：意味 → 裏：語" : "表：語 → 裏：意味");
+        return renderCardStudy();
       }
       if (e.target.closest("[data-flip]")) return flipCard();
       const ans = e.target.closest("[data-ans]");
       if (ans) return answerCard(ans.dataset.ans === "1", ans);
       const act = e.target.closest("[data-act]");
       if (!act) return;
-      if (act.dataset.act === "again") { deck.custom ? buildDeck(deck.list) : buildDeck(); renderCards(); }
-      else if (act.dataset.act === "missed") { buildDeck(deck.missed); renderCards(); }
-      else if (act.dataset.act === "quiz") go("quiz", { cat: cardOpts.cat });
-      else go("home");
+      const a = act.dataset.act;
+      if (a === "undo") undoCard();
+      else if (a === "setup") { if (deck.custom) deck = null; cardOpts.stage = "setup"; enterAnim(); renderCardSetup(); }
+      else if (a === "again") { deck.custom ? buildDeck(deck.list) : buildDeck(); renderCardStudy(); }
+      else if (a === "missed") { buildDeck(deck.missed); renderCardStudy(); }
+      else if (a === "quiz") go("quiz");
     };
   }
 
+  // パソコンのキーボードでも：スペースでめくる、→ 覚えた、← まだ、Backspace で1枚戻る
+  document.addEventListener("keydown", (e) => {
+    if (current !== "cards" || cardOpts.stage !== "study" || !deck || sheetOpen() || isOpen()) return;
+    if (e.target.closest && e.target.closest("input, textarea, select")) return;
+    if (e.key === " " || e.key === "Enter") { e.preventDefault(); flipCard(); }
+    else if (e.key === "ArrowRight") answerCard(true, $("[data-ans='1']", view));
+    else if (e.key === "ArrowLeft") answerCard(false, $("[data-ans='0']", view));
+    else if (e.key === "Backspace") { e.preventDefault(); undoCard(); }
+  });
+
   // ---------- クイズ ----------
-  const quizOpts = { cat: "all" };
   let quiz = null;
 
   VIEWS.quiz = (params = {}) => {
-    if (params.cat) quizOpts.cat = params.cat;
     if (params.words) return startQuiz(params.words);
     quiz = null;
     renderQuizSetup();
@@ -1057,10 +1264,11 @@
 
   function renderQuizSetup() {
     const st = store.settings;
-    const pool = WORDS.filter((w) => quizOpts.cat === "all" || w.category === quizOpts.cat);
+    const pool = rangeWords();
     view.innerHTML = `
       <div class="section-title" style="margin-top:4px">出題範囲</div>
-      ${catChips(quizOpts.cat)}
+      ${unitStrip()}
+      <div class="count-note">${esc(rangeLabel())} ・ ${pool.length}語</div>
       <div class="section-title">問題数</div>
       <div class="seg">${[5, 10, 20, 30].map((n) => `<button class="chip glass press ${st.quizCount === n ? "on" : ""}" data-count-opt="${n}"><span>${n}問</span></button>`).join("")}</div>
       <div class="section-title">形式</div>
@@ -1070,8 +1278,7 @@
       <div class="btn-row"><button class="btn glass press" data-act="weak"><span>${icon("flag")}苦手から出題</span></button></div>`;
 
     view.onclick = (e) => {
-      const cat = e.target.closest("[data-cat]");
-      if (cat) { quizOpts.cat = cat.dataset.cat; return renderQuizSetup(); }
+      if (unitStripClick(e, renderQuizSetup)) return;
       const cnt = e.target.closest("[data-count-opt]");
       if (cnt) { st.quizCount = Number(cnt.dataset.countOpt); save(); return renderQuizSetup(); }
       const md = e.target.closest("[data-mode]");
@@ -1202,7 +1409,7 @@
         <input id="q" type="search" placeholder="語・読み・意味・番号で検索" value="${esc(listOpts.q)}" autocomplete="off" enterkeyhint="search">
       </label>
       <div id="listCats">${catChips(listOpts.cat)}</div>
-      <div id="listSt">${chipRow([["all", "すべて"], ["0", "未学習"], ["1", "学習中"], ["2", "覚えた"], ["star", "★"]], listOpts.st, "st")}</div>
+      <div id="listSt">${chipRow([["all", "すべて"], ["0", "未学習"], ["1", "学習中"], ["2", "覚えた"], ["star", "チェック"]], listOpts.st, "st")}</div>
       <div class="count-note" id="countNote"></div>
       <div class="word-list" id="wordList"></div>`;
 
@@ -1247,14 +1454,14 @@
       view.innerHTML = ws.length
         ? `<div class="glass setting">
             <h3>苦手な語 ${ws.length}語</h3>
-            <p>カードやクイズで間違えた語と、★をつけた語がここに集まります。</p>
+            <p>カードやクイズで間違えた語と、チェックをつけた語がここに集まります。</p>
             <div class="btn-row" style="margin-top:0">
               <button class="btn glass press" data-act="cards"><span>${icon("cards")}カードで復習</span></button>
               <button class="btn primary press" data-act="quiz"><span>${icon("quiz")}クイズ</span></button>
             </div>
           </div>
           <div class="word-list" id="weakList">${ws.map(wordRow).join("")}</div>`
-        : emptyCard("sparkle", "苦手な語はありません", "カードやクイズで間違えた語、★をつけた語がここに表示されます。");
+        : emptyCard("sparkle", "苦手な語はありません", "カードやクイズで間違えた語、チェックをつけた語がここに表示されます。");
       const wl = $("#weakList");
       if (wl) bindWordRows(wl, render);
       view.onclick = (e) => {
@@ -1410,7 +1617,7 @@
       </div>
       <div class="glass setting">
         <h3>${icon("x")}学習記録をリセット</h3>
-        <p>進み具合・★・解答の履歴をこの端末から消去します。</p>
+        <p>進み具合・チェック・解答の履歴をこの端末から消去します。</p>
         <div class="btn-row" style="margin-top:0">
           ${SUBJ ? `<button class="btn glass press tint-bad" data-act="reset-subj"><span>${esc(SUBJ.name)}だけ</span></button>` : ""}
           <button class="btn glass press tint-bad" data-act="reset-all"><span>すべて</span></button>
@@ -1422,12 +1629,17 @@
       m.hidden = !text;
     };
     const load = (token) => {
+      // 先にキーボードを閉じる（開いたまま画面を差し替えると、iOS で上のバーがずれる）
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       msg("読み込み中…");
       return DATA.refresh(token).then(
         (changed) => {
           if (token) DATA.setToken(token);
-          if (changed) { toast("問題を読み込みました"); setTimeout(() => location.reload(), 500); }
-          else { toast("最新です"); rerender(); }
+          if (changed) {
+            applyNewData();
+            toast("問題を読み込みました");
+            go(token ? "home" : "settings");
+          } else { toast("最新です"); rerender(); }
         },
         (err) => msg(err.message),
       );
@@ -1473,6 +1685,8 @@
   const isOpen = () => body.classList.contains("drawer-open");
 
   function openDrawer() {
+    toggleDrawerSubj(false);
+    closeSubjMenu();
     body.classList.add("drawer-open");
     drawer.setAttribute("aria-hidden", "false");
     drawer.style.transform = "";
@@ -1488,8 +1702,10 @@
   $("#menuBtn").addEventListener("click", () => (isOpen() ? closeDrawer() : openDrawer()));
   scrim.addEventListener("click", closeDrawer);
   drawer.addEventListener("click", (e) => {
+    if (e.target.closest("#drawerSubjBtn")) return toggleDrawerSubj();
     const s = e.target.closest("[data-subject]");
     if (s) {
+      toggleDrawerSubj(false);
       closeDrawer();
       switchSubject(s.dataset.subject, e.clientX, e.clientY);
       return;
@@ -1616,7 +1832,15 @@
 
   // ---------- 起動 ----------
   $("#drawerNav").innerHTML = NAV.map(([k, t, ic], i) => `<li style="--i:${i}"><button data-nav="${k}"><span class="ni">${icon(ic)}</span>${t}</button></li>`).join("");
-  $("#subjPill").addEventListener("click", openSubjectSheet);
+  $("#subjPill").addEventListener("click", (e) => { e.stopPropagation(); subjMenuOpen() ? closeSubjMenu() : openSubjMenu(); });
+  $("#menuScrim").addEventListener("click", closeSubjMenu);
+  $("#subjMenu").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-subject]");
+    if (!b) return;
+    closeSubjMenu();
+    switchSubject(b.dataset.subject, e.clientX, e.clientY);
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && subjMenuOpen()) closeSubjMenu(); });
   renderChrome();
 
   // 現代文単語アプリ時代の記録を引き継いだら、新しいキーに保存して古いキーは消す
@@ -1629,13 +1853,18 @@
 
   go("home");
 
-  // 裏で最新の問題を取りに行く。変わっていたら、ホームにいるときだけすぐ読み込み直す
-  // （学習の途中で画面が切り替わらないように。それ以外は次に開いたときに反映）
+  // 裏で最新の問題を取りに行く。変わっていたら、ホーム・記録・設定にいるときだけその場で反映する
+  // （学習の途中で画面が切り替わらないように。それ以外はホームに戻ったときに反映）
   if (DATA.hasToken()) {
     DATA.refresh().then((changed) => {
       if (!changed) return;
-      if (current === "home" && !sheetOpen() && !isOpen()) location.reload();
-      else toast("新しい問題を取得しました。開き直すと反映されます");
+      if (OPEN_WHEN_EMPTY.includes(current) && !sheetOpen() && !isOpen()) {
+        applyNewData();
+        go(current);
+      } else {
+        pendingData = true;
+        toast("新しい問題を取得しました。ホームに戻ると反映されます");
+      }
     }, () => { /* オフラインなどは保存済みの問題で続ける */ });
   }
 
