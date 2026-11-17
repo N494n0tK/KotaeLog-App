@@ -1,5 +1,5 @@
 // ネットワーク優先・失敗時のみキャッシュ（単語データを追加したらすぐ反映されるように）
-const CACHE = "kotaelog-v1";
+const CACHE = "kotaelog-v2";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {

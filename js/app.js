@@ -6,10 +6,16 @@
 
   // ---------- データ（js/data.js が KotaeLog-Que から読み込んだもの） ----------
   const DATA = window.KOTAE_DATA;
-  const WORDS = (() => {
+
+  // 見出し語の文字数（.fit が1行に収まる文字サイズを計算するのに使う）
+  const fitLen = (w) => `--len:${[...w.word].length}`;
+  const noLabel = (w) => (w.no === null ? "" : `No.${w.no}`);
+
+  // 1教科分の問題を整える（重複を除き、整理番号順に並べる）
+  function normalize(items, subjectName) {
     const seen = new Set();
     const seenNo = new Set();
-    const list = (window.WORDS || [])
+    const list = (items || [])
       .filter((w) => w && w.word && w.meaning && !seen.has(w.word) && seen.add(w.word))
       .map((w) => ({
         no: w.no === undefined || w.no === null || w.no === "" ? null : w.no,
@@ -23,7 +29,7 @@
       }));
     list.forEach((w) => {
       if (w.no === null) return;
-      if (seenNo.has(String(w.no))) console.warn(`整理番号 ${w.no} が重複しています（${w.word}）`);
+      if (seenNo.has(String(w.no))) console.warn(`[${subjectName}] 整理番号 ${w.no} が重複しています（${w.word}）`);
       seenNo.add(String(w.no));
     });
     // 整理番号順に並べる（番号のない語は末尾、書いた順のまま）
@@ -34,34 +40,70 @@
         return String(a.no).localeCompare(String(b.no), "ja", { numeric: true }) || i - j;
       })
       .map(([w]) => w);
-  })();
-  // 見出し語の文字数（.fit が1行に収まる文字サイズを計算するのに使う）
-  const fitLen = (w) => `--len:${[...w.word].length}`;
-  const noLabel = (w) => (w.no === null ? "" : `No.${w.no}`);
-  const CATEGORIES = [...new Set(WORDS.map((w) => w.category))];
-  const BY_WORD = new Map(WORDS.map((w) => [w.word, w]));
+  }
+
+  // 教科の色 [メイン, 相方]。index.json に color が無い教科はこの順に割り当てる
+  const FALLBACK_COLORS = [
+    ["#6250d6", "#b14cff"], ["#2a78d6", "#22b8e6"], ["#0e9688", "#5cc86e"],
+    ["#d95926", "#f2a21b"], ["#9a7a00", "#d4a72c"], ["#c8467a", "#f07a8a"],
+  ];
+  const isHex = (c) => typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c);
+  const SUBJECTS = DATA.subjects().map((s, i) => ({
+    id: String(s.id),
+    name: String(s.name),
+    color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+    words: normalize(s.items, s.name),
+  }));
+  const subjectById = (id) => SUBJECTS.find((s) => s.id === id) || null;
+  const subjStyle = (s) => `--c1:${s.color[0]};--c2:${s.color[1]}`;
+  const subjInitial = (s) => [...s.name][0] || "?";
+
+  // いま選んでいる教科（切り替えるとまとめて差し替わる）
+  let SUBJ = null;
+  let SID = "";
+  let WORDS = [];
+  let CATEGORIES = [];
+  let BY_WORD = new Map();
 
   // ---------- 保存 ----------
-  const STORE_KEY = "gendaibun-words.v1";
+  // 学習の進み具合は教科ごと（progress[教科ID][見出し語]）。解答の履歴は log に全教科まとめて持つ
+  const STORE_KEY = "kotaelog.store.v1";
+  const OLD_KEY = "gendaibun-words.v1"; // 現代文単語アプリ時代の保存キー（現代国語として引き継ぐ）
+  const MAX_LOG = 8000;
   const NEW = 0, LEARNING = 1, MASTERED = 2;
   const STATUS_LABEL = ["未学習", "学習中", "覚えた"];
   const STATUS_CLASS = ["c-new", "c-learning", "c-mastered"];
 
-  let store = { progress: {}, settings: { quizCount: 10, quizMode: "mix", cardMode: "w2m", cardFilter: "all" } };
+  let store = { progress: {}, log: [], settings: { quizCount: 10, quizMode: "mix", cardMode: "w2m", cardFilter: "all", subject: "" } };
   try {
-    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    let saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (!saved) {
+      const old = JSON.parse(localStorage.getItem(OLD_KEY));
+      if (old && typeof old === "object") saved = { progress: { gendaibun: old.progress || {} }, settings: old.settings || {} };
+    }
     if (saved && typeof saved === "object") {
-      store.progress = saved.progress || {};
+      store.progress = saved.progress && typeof saved.progress === "object" ? saved.progress : {};
+      store.log = Array.isArray(saved.log) ? saved.log : [];
       store.settings = Object.assign(store.settings, saved.settings || {});
     }
   } catch (_) { /* 保存領域が使えない環境ではメモリのみ */ }
 
   const save = () => {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (_) {}
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(store));
+    } catch (_) {
+      // 容量がいっぱいのときは、古い解答履歴から削ってもう一度
+      if (store.log.length > 500) {
+        store.log = store.log.slice(-Math.floor(store.log.length / 2));
+        try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (__) {}
+      }
+    }
   };
-  const prog = (word) => store.progress[word] || { s: NEW, ok: 0, ng: 0, streak: 0, star: false };
+  const progMap = (sid = SID) => store.progress[sid] || (store.progress[sid] = {});
+  const progIn = (sid, word) => progMap(sid)[word] || { s: NEW, ok: 0, ng: 0, streak: 0, star: false };
+  const prog = (word) => progIn(SID, word);
   const setProg = (word, patch) => {
-    store.progress[word] = Object.assign(prog(word), patch, { t: Date.now() });
+    progMap()[word] = Object.assign(prog(word), patch, { t: Date.now() });
     save();
   };
   const statusOf = (word) => prog(word).s || NEW;
@@ -69,6 +111,94 @@
     const p = prog(word);
     return p.star || (p.ng > 0 && p.s !== MASTERED);
   };
+  const masteredIn = (s) => s.words.filter((w) => (progIn(s.id, w.word).s || NEW) === MASTERED).length;
+
+  // 解答を1件記録する（カード = c / クイズ = q）。直近10回の結果は語ごとにも持っておく
+  function logAnswer(word, ok, mode, patch) {
+    const h = ((prog(word).h || "") + (ok ? "1" : "0")).slice(-10);
+    store.log.push({ t: Date.now(), s: SID, w: word, ok: ok ? 1 : 0, m: mode });
+    if (store.log.length > MAX_LOG) store.log.splice(0, store.log.length - MAX_LOG);
+    setProg(word, Object.assign({ h }, patch));
+  }
+
+  // ---------- 記録の集計 ----------
+  const dayKey = (t) => {
+    const d = new Date(t);
+    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  };
+  const logOf = (sid) => (sid ? store.log.filter((e) => e.s === sid) : store.log);
+  const rate = (ok, n) => (n ? Math.round((ok / n) * 100) : 0);
+
+  // 解答数・正答率・今日の分・連続学習日数（sid を省くと全教科）
+  function summary(sid) {
+    const today = dayKey(Date.now());
+    const days = new Set();
+    let n = 0, ok = 0, tn = 0, tok = 0;
+    for (const e of logOf(sid)) {
+      n++;
+      ok += e.ok;
+      const k = dayKey(e.t);
+      days.add(k);
+      if (k === today) { tn++; tok += e.ok; }
+    }
+    // 今日まだ解いていなければ、昨日から数える
+    let streak = 0;
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    if (!days.has(dayKey(d))) d.setDate(d.getDate() - 1);
+    while (days.has(dayKey(d))) { streak++; d.setDate(d.getDate() - 1); }
+    return { n, ok, tn, tok, streak };
+  }
+
+  // 直近 count 日の、日ごとの解答数と正解数
+  function daily(sid, count = 14) {
+    const map = new Map();
+    for (const e of logOf(sid)) {
+      const k = dayKey(e.t);
+      const v = map.get(k) || { n: 0, ok: 0 };
+      v.n++;
+      v.ok += e.ok;
+      map.set(k, v);
+    }
+    const out = [];
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - (count - 1));
+    for (let i = 0; i < count; i++) {
+      const v = map.get(dayKey(d)) || { n: 0, ok: 0 };
+      out.push({ m: d.getMonth() + 1, day: d.getDate(), n: v.n, ok: v.ok, today: i === count - 1 });
+      d.setDate(d.getDate() + 1);
+    }
+    return out;
+  }
+
+  // 「3分前」「昨日 14:20」のような表示
+  function relTime(t) {
+    const diff = Date.now() - t;
+    if (diff < 60e3) return "たった今";
+    if (diff < 3600e3) return `${Math.floor(diff / 60e3)}分前`;
+    const d = new Date(t);
+    const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+    if (dayKey(t) === dayKey(Date.now())) return `今日 ${hm}`;
+    if (dayKey(t) === dayKey(Date.now() - 864e5)) return `昨日 ${hm}`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+  }
+
+  // ---------- 教科の選択 ----------
+  function useSubject(id) {
+    SUBJ = subjectById(id) || SUBJECTS.find((s) => s.words.length) || SUBJECTS[0] || null;
+    SID = SUBJ ? SUBJ.id : "";
+    WORDS = SUBJ ? SUBJ.words : [];
+    CATEGORIES = [...new Set(WORDS.map((w) => w.category))];
+    BY_WORD = new Map(WORDS.map((w) => [w.word, w]));
+    // 教科の色をアプリ全体のアクセントにする（CSS 側でなめらかに移り変わる）
+    if (SUBJ) {
+      const root = document.documentElement.style;
+      root.setProperty("--accent", SUBJ.color[0]);
+      root.setProperty("--accent-2", SUBJ.color[1]);
+    }
+  }
+  useSubject(store.settings.subject);
 
   // ---------- ユーティリティ ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -207,22 +337,145 @@
   document.addEventListener("pointerup", (e) => { if (pressed && e.pointerId === pressed.id) release(true); }, { passive: true });
   document.addEventListener("pointercancel", () => release(false), { passive: true });
 
+  // ---------- アイコン（線の太さ・角の丸みを揃えた自前のセット） ----------
+  const ICON = {
+    home: '<path d="M3.5 11 12 4l8.5 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
+    cards: '<rect x="3.5" y="7" width="13" height="13.5" rx="2.5"/><path d="M8 4h9.5A2.5 2.5 0 0 1 20 6.5V16"/>',
+    quiz: '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.4v.6"/><path d="M12 16.6h.01"/>',
+    list: '<path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/>',
+    flag: '<path d="M5.5 21V4"/><path d="M5.5 4.5h11.5l-2.5 4.25L17 13H5.5"/>',
+    chart: '<path d="M3.5 20.5h17"/><path d="M7 16.5v-5M12 16.5v-10M17 16.5v-7"/>',
+    sliders: '<path d="M4 7.5h9M18 7.5h2M4 16.5h3M12 16.5h8"/><circle cx="15.5" cy="7.5" r="2.5"/><circle cx="9.5" cy="16.5" r="2.5"/>',
+    star: '<path d="m12 3.6 2.55 5.2 5.7.83-4.13 4.02.98 5.68L12 16.65l-5.1 2.68.98-5.68-4.13-4.02 5.7-.83z"/>',
+    check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+    x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    swap: '<path d="M4.5 8h14l-3.5-3.5"/><path d="M19.5 16h-14L9 19.5"/>',
+    shuffle: '<path d="M3.5 7.5h3c2 0 3.1.9 4.1 2.6l2.8 4.8c1 1.7 2.1 2.6 4.1 2.6h3"/><path d="M3.5 16.5h3c1.1 0 2-.3 2.7-.9M14.4 8.4c.7-.6 1.6-.9 2.6-.9h3.5"/><path d="m18 4.5 2.5 3-2.5 3M18 14.5l2.5 3-2.5 3"/>',
+    trophy: '<path d="M8 4h8v5.5a4 4 0 0 1-8 0z"/><path d="M8 6.5H5.5a2.5 2.5 0 0 0 2.6 4M16 6.5h2.5a2.5 2.5 0 0 1-2.6 4"/><path d="M12 13.5v3.5M8.5 20h7M10 17h4l.5 3h-5z"/>',
+    sparkle: '<path d="M12 3.5c.6 3.9 2.6 5.9 6.5 6.5-3.9.6-5.9 2.6-6.5 6.5-.6-3.9-2.6-5.9-6.5-6.5 3.9-.6 5.9-2.6 6.5-6.5z"/><path d="M18.5 16.5c.25 1.5 1 2.25 2.5 2.5-1.5.25-2.25 1-2.5 2.5-.25-1.5-1-2.25-2.5-2.5 1.5-.25 2.25-1 2.5-2.5z"/>',
+    book: '<path d="M5 5a1.5 1.5 0 0 1 1.5-1.5H19v14H6.5A1.5 1.5 0 0 0 5 19z"/><path d="M5 19a1.5 1.5 0 0 0 1.5 1.5H19"/><path d="M9 7.5h6"/>',
+    key: '<circle cx="8" cy="15.5" r="4"/><path d="m11 12.5 8.5-8.5M16.5 7l2.5 2.5M14 9.5l2 2"/>',
+    calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+    flame: '<path d="M12 21c3.9 0 6.5-2.6 6.5-6.3 0-3-1.8-5.3-3.8-7-.3 1.8-1.2 3.1-2.6 3.8C12.4 8 10.9 5.3 8.5 3.3 8.6 6.6 5.5 8.9 5.5 14.4 5.5 18.4 8.1 21 12 21z"/>',
+    target: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="0.6"/>',
+    layers: '<path d="m12 3.5 8.5 4.75L12 13 3.5 8.25z"/><path d="m3.5 12.25 8.5 4.75 8.5-4.75"/><path d="m3.5 16.25 8.5 4.75 8.5-4.75"/>',
+    refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
+    chevR: '<path d="m9.5 6 6 6-6 6"/>',
+    chevD: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
+  };
+  const icon = (name, cls = "") =>
+    `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name] || ""}</svg>`;
+
+  // ---------- 演出 ----------
+  // 数字のカウントアップ（data-count="数値"）
+  function countUp(root = view) {
+    $$("[data-count]", root).forEach((el) => {
+      const to = Number(el.dataset.count) || 0;
+      if (reduceMotion || to === 0) { el.textContent = String(to); return; }
+      const t0 = performance.now();
+      const dur = 700 + Math.min(600, to * 6);
+      el.textContent = "0";
+      const tick = (now) => {
+        const k = Math.min(1, (now - t0) / dur);
+        el.textContent = String(Math.round(to * (1 - Math.pow(1 - k, 3))));
+        if (k < 1 && el.isConnected) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  // .stagger の子を少しずつ遅らせて出す
+  function stagger(root = view, base = 60, step = 45) {
+    $$(".stagger", root).forEach((box) => [...box.children].forEach((c, i) => c.style.setProperty("--d", `${base + i * step}ms`)));
+  }
+
+  // 正解したときに弾ける光の粒
+  function burst(el, n = 14) {
+    if (reduceMotion || !el || !el.isConnected) return;
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const colors = [SUBJ ? SUBJ.color[0] : "#6250d6", SUBJ ? SUBJ.color[1] : "#b14cff", "#3ee0ad", "#ffd54a"];
+    for (let i = 0; i < n; i++) {
+      const p = document.createElement("i");
+      const size = 5 + Math.random() * 6;
+      p.className = "spark";
+      p.style.cssText = `left:${cx}px;top:${cy}px;width:${size}px;height:${size}px;background:${colors[i % colors.length]};border-radius:${i % 3 ? "50%" : "2px"}`;
+      document.body.appendChild(p);
+      const a = (Math.PI * 2 * i) / n + Math.random() * 0.5;
+      const d = 46 + Math.random() * 70;
+      p.animate(
+        [
+          { transform: "translate(-50%, -50%) scale(1)", opacity: 1 },
+          { transform: `translate(calc(-50% + ${(Math.cos(a) * d).toFixed(1)}px), calc(-50% + ${(Math.sin(a) * d - 18).toFixed(1)}px)) rotate(${Math.round(Math.random() * 300)}deg) scale(0.2)`, opacity: 0 },
+        ],
+        { duration: 650 + Math.random() * 350, easing: "cubic-bezier(.15,.7,.3,1)" }
+      ).onfinish = () => p.remove();
+    }
+  }
+
+  // 教科を切り替えたとき、押した場所から新しい教科の色が広がる
+  function themeWave(x, y) {
+    if (reduceMotion || !SUBJ) return;
+    const w = document.createElement("div");
+    w.className = "theme-wave";
+    w.style.setProperty("--w1", SUBJ.color[0]);
+    w.style.setProperty("--w2", SUBJ.color[1]);
+    w.style.setProperty("--x", `${x}px`);
+    w.style.setProperty("--y", `${y}px`);
+    document.body.appendChild(w);
+    const R = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 40;
+    w.animate(
+      [
+        { clipPath: `circle(0px at ${x}px ${y}px)`, opacity: 0.85 },
+        { clipPath: `circle(${R}px at ${x}px ${y}px)`, opacity: 0.5, offset: 0.55 },
+        { clipPath: `circle(${R}px at ${x}px ${y}px)`, opacity: 0 },
+      ],
+      { duration: 950, easing: "cubic-bezier(.3,.7,.2,1)" }
+    ).onfinish = () => w.remove();
+  }
+
   // ---------- ルーティング（履歴は使わない＝戻る操作でアプリを離れない） ----------
   let current = "home";
-  const TITLES = { home: "ホーム", cards: "単語カード", quiz: "4択クイズ", list: "単語一覧", weak: "苦手な単語", settings: "設定" };
+  const NAV = [
+    ["home", "ホーム", "home"],
+    ["cards", "暗記カード", "cards"],
+    ["quiz", "4択クイズ", "quiz"],
+    ["list", "一覧", "list"],
+    ["weak", "苦手", "flag"],
+    ["records", "記録", "chart"],
+    ["settings", "設定", "sliders"],
+  ];
+  const TITLES = Object.fromEntries(NAV.map(([k, t]) => [k, t]));
+  // 問題が無い教科でも開ける画面
+  const OPEN_WHEN_EMPTY = ["home", "records", "settings"];
+
+  function setTitle(text) {
+    if (titleEl.textContent === text) return;
+    titleEl.textContent = text;
+    if (!reduceMotion) titleEl.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: "cubic-bezier(.22,.8,.24,1)" });
+  }
 
   function go(name, params = {}) {
-    // 問題データがまだ無いときは、ホームと設定だけ開ける
-    if (!WORDS.length && name !== "settings") name = "home";
+    if (!VIEWS[name]) name = "home";
+    if (!WORDS.length && !OPEN_WHEN_EMPTY.includes(name)) name = "home";
     current = name;
     closeSheet();
-    titleEl.textContent = TITLES[name] || "";
+    setTitle(TITLES[name] || "");
     badgeEl.textContent = "";
-    $$(".drawer-nav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
+    $$("#drawerNav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
     enterAnim();
     window.scrollTo(0, 0);
-    (VIEWS[name] || VIEWS.home)(params);
+    VIEWS[name](params);
+    stagger();
+    countUp();
     updateDrawerSub();
+  }
+  // 同じ画面を描き直す（絞り込みの切り替えなど）
+  function rerender() {
+    VIEWS[current]();
+    stagger();
+    countUp();
   }
 
   // 画面を出すときの「ふわっと出る」演出。終わったら外す
@@ -233,12 +486,26 @@
     void view.offsetWidth;
     view.classList.add("enter");
     clearTimeout(enterTimer);
-    enterTimer = setTimeout(() => view.classList.remove("enter"), 900);
+    enterTimer = setTimeout(() => view.classList.remove("enter"), 1100);
   }
 
   function updateDrawerSub() {
     const c = counts();
-    $("#drawerSub").textContent = `${WORDS.length}語中 ${c[MASTERED]}語 習得`;
+    $("#drawerSub").textContent = SUBJ ? `${SUBJ.name} ・ ${WORDS.length}語中 ${c[MASTERED]}語 習得` : "問題を読み込んでください";
+  }
+
+  // 教科チップ（ホームの帯・サイドバーで共通）
+  const subjChip = (s) =>
+    `<button class="subj-chip press ${s.id === SID ? "on" : ""}" data-subject="${esc(s.id)}" style="${subjStyle(s)}"><span class="subj-dot"></span><span>${esc(s.name)}</span><span class="subj-chip-n">${s.words.length}</span></button>`;
+
+  // トップバーの教科ボタンとサイドバーの教科一覧を今の教科に合わせる
+  function renderChrome() {
+    const pill = $("#subjPill");
+    pill.hidden = !SUBJ;
+    if (SUBJ) $("#subjName").textContent = SUBJ.name;
+    $("#drawerSubjWrap").hidden = SUBJECTS.length < 2;
+    $("#drawerSubjects").innerHTML = SUBJECTS.map((s) => `<li>${subjChip(s)}</li>`).join("");
+    updateDrawerSub();
   }
 
   // ---------- 部品 ----------
@@ -257,6 +524,9 @@
     return h;
   };
 
+  const starBtn = (word, on) =>
+    `<button class="star ${on ? "on" : ""}" data-star="${esc(word)}" aria-label="★（苦手リスト）" aria-pressed="${on}">${icon("star")}</button>`;
+
   const wordRow = (w) => {
     const p = prog(w.word);
     return `<div class="word-row glass press" data-word="${esc(w.word)}" role="button" tabindex="0">
@@ -265,9 +535,11 @@
         <div class="w">${w.no !== null ? `<span class="num">${esc(noLabel(w))}</span>` : ""}${esc(w.word)} <span class="r">${esc(w.reading)}</span></div>
         <div class="m">${esc(w.meaning)}</div>
       </div>
-      <button class="star ${p.star ? "on" : ""}" data-star="${esc(w.word)}" aria-label="お気に入り">${p.star ? "★" : "☆"}</button>
+      ${starBtn(w.word, p.star)}
     </div>`;
   };
+
+  const popStar = (el) => { if (!reduceMotion) el.animate([{ transform: "scale(.6) rotate(-20deg)" }, { transform: "scale(1.25) rotate(8deg)", offset: 0.5 }, { transform: "none" }], { duration: 450, easing: "ease-out" }); };
 
   function bindWordRows(root, onChange) {
     root.addEventListener("click", (e) => {
@@ -278,7 +550,8 @@
         const on = !prog(word).star;
         setProg(word, { star: on });
         star.classList.toggle("on", on);
-        star.textContent = on ? "★" : "☆";
+        star.setAttribute("aria-pressed", String(on));
+        if (on) popStar(star);
         toast(on ? "★ 苦手リストに追加" : "苦手リストから外しました");
         onChange && onChange();
         return;
@@ -287,6 +560,9 @@
       if (row) openWordSheet(row.dataset.word, onChange);
     });
   }
+
+  // 直近の結果（○×）を小さな点で並べる
+  const histDots = (h) => `<span class="hist">${[...h].map((c) => `<i class="${c === "1" ? "ok" : "ng"}"></i>`).join("")}</span>`;
 
   // ---------- 詳細シート ----------
   const sheetWrap = $("#sheetWrap");
@@ -297,6 +573,7 @@
     if (!w) return;
     const render = () => {
       const p = prog(word);
+      const n = (p.ok || 0) + (p.ng || 0);
       sheet.innerHTML = `
         <div class="grab-zone" aria-label="下に引っ張って閉じる"><div class="grabber"></div></div>
         <div class="sheet-body">
@@ -306,12 +583,17 @@
         <div class="back-meaning">${esc(w.meaning)}</div>
         ${w.example ? `<div class="back-example">${esc(w.example)}</div>` : ""}
         ${relHtml(w)}
+        <div class="sheet-stats">
+          <div><b>${n ? `${rate(p.ok || 0, n)}<small>%</small>` : "–"}</b><span>正答率</span></div>
+          <div><b>${p.ok || 0}</b><span>正解</span></div>
+          <div><b>${p.ng || 0}</b><span>不正解</span></div>
+        </div>
+        ${p.h ? `<div class="hist-row"><span>直近の結果</span>${histDots(p.h)}</div>` : ""}
         <div class="status-seg">${STATUS_LABEL.map((l, i) => `<button data-s="${i}" class="${(p.s || 0) === i ? "on" : ""}">${l}</button>`).join("")}</div>
         <div class="btn-row">
-          <button class="btn small glass press" data-act="star"><span>${p.star ? "★ 苦手から外す" : "☆ 苦手に追加"}</span></button>
+          <button class="btn small glass press" data-act="star"><span>${icon("star")}${p.star ? "苦手から外す" : "苦手に追加"}</span></button>
           <button class="btn small glass press" data-act="close"><span>閉じる</span></button>
         </div>
-        <div style="text-align:center;font-size:12px;color:var(--ink-3);margin-top:12px">正解 ${p.ok || 0} ・ 不正解 ${p.ng || 0}</div>
         </div>`;
     };
     render();
@@ -333,6 +615,33 @@
     };
     sheetWrap.classList.add("open");
   }
+
+  // 教科を選ぶシート
+  function openSubjectSheet() {
+    sheet.innerHTML = `
+      <div class="grab-zone" aria-label="下に引っ張って閉じる"><div class="grabber"></div></div>
+      <div class="sheet-body">
+        <div class="sheet-title">教科を選ぶ</div>
+        <div class="subj-grid stagger">${SUBJECTS.map((s) => {
+          const m = masteredIn(s);
+          return `<button class="subj-card press ${s.id === SID ? "on" : ""}" data-subject="${esc(s.id)}" style="${subjStyle(s)}">
+            <span class="subj-ini">${esc(subjInitial(s))}</span>
+            <span class="subj-card-name">${esc(s.name)}</span>
+            <span class="subj-card-sub">${s.words.length ? `${s.words.length}語 ・ 習得 ${rate(m, s.words.length)}%` : "準備中"}</span>
+            ${s.id === SID ? `<span class="subj-check">${icon("check")}</span>` : ""}
+          </button>`;
+        }).join("")}</div>
+      </div>`;
+    stagger(sheet, 120, 40);
+    sheet.onclick = (e) => {
+      const b = e.target.closest("[data-subject]");
+      if (!b) return;
+      closeSheet();
+      switchSubject(b.dataset.subject, e.clientX, e.clientY);
+    };
+    sheetWrap.classList.add("open");
+  }
+
   function closeSheet() { sheetWrap.classList.remove("open"); }
   sheetWrap.addEventListener("click", (e) => { if (e.target === sheetWrap) closeSheet(); });
   const sheetOpen = () => sheetWrap.classList.contains("open");
@@ -377,21 +686,57 @@
   // ============================================================
   const VIEWS = {};
 
+  // 中身が無いときの案内（アイコン・見出し・説明）
+  const emptyCard = (ico, title, text, extra = "") => `
+    <div class="glass result">
+      <div class="badge-ico">${icon(ico)}</div>
+      <div class="msg">${title}</div>
+      <p class="note">${text}</p>
+      ${extra}
+    </div>`;
+
+  const subjStrip = () => (SUBJECTS.length > 1 ? `<div class="chips subj-strip" data-noswipe>${SUBJECTS.map(subjChip).join("")}</div>` : "");
+
+  // ---------- 教科の切り替え ----------
+  function switchSubject(id, x = innerWidth / 2, y = 90) {
+    if (!subjectById(id) || id === SID) return;
+    useSubject(id);
+    store.settings.subject = SID;
+    save();
+    deck = null;
+    quiz = null;
+    cardOpts.cat = "all";
+    quizOpts.cat = "all";
+    listOpts.cat = "all";
+    themeWave(x, y);
+    renderChrome();
+    go(current);
+    toast(`${SUBJ.name}に切り替えました`);
+  }
+
   // ---------- ホーム ----------
   VIEWS.home = () => {
-    if (!WORDS.length) {
-      view.innerHTML = `
-        <div class="glass setting">
-          <h3>問題データを読み込みましょう</h3>
-          <p>問題は非公開のリポジトリ <code>${esc(DATA.repo)}</code> にあります。設定画面で読み取り用のトークンを入力すると、この端末に問題が読み込まれます（端末ごとに最初の1回だけ）。</p>
-          <button class="btn glass press primary block" data-go="settings"><span>設定を開く</span></button>
-        </div>`;
-      view.onclick = (e) => {
-        const t = e.target.closest("[data-go]");
-        if (t) go(t.dataset.go);
-      };
+    view.onclick = (e) => {
+      const s = e.target.closest("[data-subject]");
+      if (s) return switchSubject(s.dataset.subject, e.clientX, e.clientY);
+      const t = e.target.closest("[data-go]");
+      if (t) return go(t.dataset.go);
+      const c2 = e.target.closest("[data-cat-go]");
+      if (c2) go("cards", { cat: c2.dataset.catGo });
+    };
+
+    if (!DATA.hasData() || !SUBJECTS.length) {
+      view.innerHTML = emptyCard("key", "問題データを読み込みましょう",
+        `問題は非公開のリポジトリ <code>${esc(DATA.repo)}</code> にあります。設定画面で読み取り用のトークンを入力すると、この端末に問題が読み込まれます（端末ごとに最初の1回だけ）。`,
+        `<button class="btn press primary block" data-go="settings"><span>設定を開く</span></button>`);
       return;
     }
+    if (!WORDS.length) {
+      view.innerHTML = `${subjStrip()}${emptyCard("book", `${esc(SUBJ.name)}の問題はまだありません`,
+        `KotaeLog-Que の <code>subjects/${esc(SID)}.json</code> に問題を追加すると、ここに出てきます。`)}`;
+      return;
+    }
+
     const c = counts();
     const total = WORDS.length || 1;
     const pct = Math.round((c[MASTERED] / total) * 100);
@@ -399,8 +744,13 @@
     const h = new Date().getHours();
     const greet = h < 5 ? "夜更かしの<br>ひと勉強" : h < 11 ? "おはよう。<br>朝の1セット" : h < 17 ? "すきま時間に<br>コツコツと" : "今日の仕上げに<br>もう一歩";
     const weak = WORDS.filter((w) => isWeak(w.word)).length;
+    const sm = summary(SID);
+    const streak = summary().streak;
+    const tile = (go, ico, name, desc) =>
+      `<button class="tile glass press" data-go="${go}"><span class="tile-ico">${icon(ico)}</span><span><div class="tile-name">${name}</div><div class="tile-desc">${desc}</div></span></button>`;
 
     view.innerHTML = `
+      ${subjStrip()}
       <section class="hero glass">
         <div class="ring">
           <svg viewBox="0 0 112 112">
@@ -408,9 +758,10 @@
             <circle class="track" cx="56" cy="56" r="${R}" fill="none" stroke-width="10"/>
             <circle class="bar" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L}"/>
           </svg>
-          <div class="ring-label"><div><b>${pct}<span style="font-size:15px">%</span></b><small>習得率</small></div></div>
+          <div class="ring-label"><div><b><span data-count="${pct}">${pct}</span><span style="font-size:15px">%</span></b><small>習得率</small></div></div>
         </div>
         <div class="hero-stats">
+          <div class="hero-subj"><span class="subj-dot"></span>${esc(SUBJ.name)}</div>
           <div class="hero-greet">${greet}</div>
           <div class="stat-row">
             <span class="stat"><span class="dot c-mastered"></span>覚えた <b>${c[MASTERED]}</b></span>
@@ -420,24 +771,32 @@
         </div>
       </section>
 
-      <div class="section-title">学習する</div>
-      <div class="tiles">
-        <button class="tile glass press" data-go="cards"><span class="tile-ico" style="--c1:#5b6cff;--c2:#9b5cff">❏</span><span><div class="tile-name">単語カード</div><div class="tile-desc">めくって覚える</div></span></button>
-        <button class="tile glass press" data-go="quiz"><span class="tile-ico" style="--c1:#ff6b9a;--c2:#ff9f5a">✎</span><span><div class="tile-name">4択クイズ</div><div class="tile-desc">${store.settings.quizCount}問でチェック</div></span></button>
-        <button class="tile glass press" data-go="list"><span class="tile-ico" style="--c1:#14b8a6;--c2:#3b82f6">☰</span><span><div class="tile-name">単語一覧</div><div class="tile-desc">${WORDS.length}語を検索</div></span></button>
-        <button class="tile glass press" data-go="weak"><span class="tile-ico" style="--c1:#f59e0b;--c2:#ef4444">!</span><span><div class="tile-name">苦手な単語</div><div class="tile-desc">${weak}語を復習</div></span></button>
+      <div class="kpis stagger">
+        <div class="kpi glass">${icon("calendar")}<b><span data-count="${sm.tn}">${sm.tn}</span><em>問</em></b><small>今日の解答</small></div>
+        <div class="kpi glass">${icon("flame")}<b><span data-count="${streak}">${streak}</span><em>日</em></b><small>連続学習</small></div>
+        <div class="kpi glass">${icon("target")}<b>${sm.n ? `<span data-count="${rate(sm.ok, sm.n)}">${rate(sm.ok, sm.n)}</span><em>%</em>` : "–"}</b><small>正答率</small></div>
       </div>
 
-      <div class="section-title">カテゴリ別</div>
-      <div class="cat-list">
+      <div class="section-title">学習する</div>
+      <div class="tiles stagger">
+        ${tile("cards", "cards", "暗記カード", "めくって覚える")}
+        ${tile("quiz", "quiz", "4択クイズ", `${store.settings.quizCount}問でチェック`)}
+        ${tile("list", "list", "一覧", `${WORDS.length}語を検索`)}
+        ${tile("weak", "flag", "苦手", `${weak}語を復習`)}
+      </div>
+      <button class="link-row glass press" data-go="records"><span class="tile-ico sm">${icon("chart")}</span><span class="grow"><b>記録を見る</b><small>解答の履歴・正答率・連続学習</small></span>${icon("chevR", "chev")}</button>
+
+      <div class="section-title">単元別</div>
+      <div class="cat-list stagger">
         ${CATEGORIES.map((cat) => {
-          const ws = WORDS.filter((w) => w.word && w.category === cat);
+          const ws = WORDS.filter((w) => w.category === cat);
           const m = counts(ws)[MASTERED];
           return `<button class="cat-item glass press" data-cat-go="${esc(cat)}">
             <div class="grow">
-              <div style="display:flex;justify-content:space-between;gap:8px"><span class="cat-name">${esc(cat)}</span><span class="cat-count">${m} / ${ws.length}</span></div>
-              <div class="mini-bar"><i style="width:${(m / ws.length) * 100}%"></i></div>
+              <div class="row-top"><span class="cat-name">${esc(cat)}</span><span class="cat-count">${m} / ${ws.length}</span></div>
+              <div class="mini-bar"><i class="grow-x" style="width:${(m / ws.length) * 100}%"></i></div>
             </div>
+            ${icon("chevR", "chev")}
           </button>`;
         }).join("")}
       </div>`;
@@ -446,20 +805,13 @@
       const bar = $(".ring .bar", view);
       if (bar) bar.style.strokeDashoffset = String(L * (1 - c[MASTERED] / total));
     }));
-
-    view.onclick = (e) => {
-      const t = e.target.closest("[data-go]");
-      if (t) return go(t.dataset.go);
-      const c2 = e.target.closest("[data-cat-go]");
-      if (c2) go("cards", { cat: c2.dataset.catGo });
-    };
   };
 
-  // ---------- 単語カード ----------
+  // ---------- 暗記カード ----------
   const cardOpts = { cat: "all", shuffle: true };
   let deck = null;
 
-  // カードの絞り込み（学習状況で出す単語を選ぶ）
+  // カードの絞り込み（学習状況で出す語を選ぶ）
   const CARD_FILTERS = [
     ["all", "すべて", () => true],
     ["new", "未学習", (p) => (p.s || NEW) === NEW],
@@ -499,18 +851,18 @@
       ? `<div class="count-note">${deck.list.length}枚を復習中</div>`
       : `${catChips(cardOpts.cat)}${filterChips()}`;
     // 表に出す面の切り替え（タップするたびに 語→意味 / 意味→語 が入れ替わる）
-    const dirChip = `<button class="chip glass press" data-dir aria-label="表に出す面を切り替え"><span>⇄ ${store.settings.cardMode === "m2w" ? "意味 → 語" : "語 → 意味"}</span></button>`;
+    const dirChip = `<button class="chip glass press" data-dir aria-label="表に出す面を切り替え"><span>${icon("swap")}${store.settings.cardMode === "m2w" ? "意味 → 語" : "語 → 意味"}</span></button>`;
     head += deck.custom
       ? `<div class="toggles">${dirChip}</div>`
       : `
         <div class="toggles">
           ${dirChip}
-          <button class="chip glass press ${cardOpts.shuffle ? "on" : ""}" data-opt="shuffle"><span>シャッフル</span></button>
+          <button class="chip glass press ${cardOpts.shuffle ? "on" : ""}" data-opt="shuffle"><span>${icon("shuffle")}シャッフル</span></button>
         </div>`;
 
     if (!total) {
       badgeEl.textContent = "";
-      view.innerHTML = `${head}<div class="glass result"><div class="msg">該当する単語がありません</div><p style="color:var(--ink-2)">${store.settings.cardFilter === "missed" ? "ミスした単語はありません。" : "条件を変えてみてください。"}</p></div>`;
+      view.innerHTML = `${head}${emptyCard("sparkle", "該当する語がありません", store.settings.cardFilter === "missed" ? "ミスした語はありません。" : "条件を変えてみてください。")}`;
       bindCardHead();
       return;
     }
@@ -520,9 +872,9 @@
       enterAnim();
       view.innerHTML = `${head}
         <div class="glass result">
-          <div style="font-size:44px">🎉</div>
+          <div class="badge-ico shine">${icon("trophy")}</div>
           <div class="msg">${total}枚 完了！</div>
-          <p style="color:var(--ink-2);margin:4px 0 18px">覚えた ${deck.known} ・ まだ ${deck.unknown}</p>
+          <p class="note">覚えた ${deck.known} ・ まだ ${deck.unknown}</p>
           ${deck.missed.length ? `<button class="btn primary block press" data-act="missed"><span>「まだ」の${deck.missed.length}枚をもう一度</span></button><div style="height:10px"></div>` : ""}
           <button class="btn ${deck.missed.length ? "glass" : "primary"} block press" data-act="again"><span>もう一度</span></button>
           <div class="btn-row">
@@ -531,6 +883,7 @@
           </div>
         </div>`;
       bindCardHead();
+      if (!deck.unknown) setTimeout(() => burst($(".badge-ico", view), 18), 250);
       return;
     }
 
@@ -542,8 +895,8 @@
         ${flipHtml(w, "", "in")}
       </div>
       <div class="answer-row">
-        <button class="btn glass press tint-bad" data-ans="0"><span>まだ</span></button>
-        <button class="btn glass press tint-good" data-ans="1"><span>覚えた</span></button>
+        <button class="btn glass press tint-bad" data-ans="0"><span>${icon("x")}まだ</span></button>
+        <button class="btn glass press tint-good" data-ans="1"><span>${icon("check")}覚えた</span></button>
       </div>`;
     bindCardHead();
     requestAnimationFrame(preloadNext);
@@ -605,16 +958,17 @@
     scene.insertAdjacentHTML("afterbegin", flipHtml(next, "queued"));
   }
 
-  function answerCard(known) {
+  function answerCard(known, btn) {
     const flip = $("#flip");
     if (!flip) return;
     const w = deck.list[deck.i];
     const p = prog(w.word);
     if (known) {
-      setProg(w.word, { s: MASTERED, ok: (p.ok || 0) + 1 });
+      logAnswer(w.word, true, "c", { s: MASTERED, ok: (p.ok || 0) + 1 });
       deck.known++;
+      burst(btn, 10);
     } else {
-      setProg(w.word, { s: LEARNING, ng: (p.ng || 0) + 1, streak: 0 });
+      logAnswer(w.word, false, "c", { s: LEARNING, ng: (p.ng || 0) + 1, streak: 0 });
       deck.unknown++;
       deck.missed.push(w);
     }
@@ -655,7 +1009,6 @@
     requestAnimationFrame(() => requestAnimationFrame(preloadNext));
   }
 
-
   function bindCardHead() {
     view.onclick = (e) => {
       const cat = e.target.closest("[data-cat]");
@@ -681,7 +1034,7 @@
       }
       if (e.target.closest("[data-flip]")) return flipCard();
       const ans = e.target.closest("[data-ans]");
-      if (ans) return answerCard(ans.dataset.ans === "1");
+      if (ans) return answerCard(ans.dataset.ans === "1", ans);
       const act = e.target.closest("[data-act]");
       if (!act) return;
       if (act.dataset.act === "again") { deck.custom ? buildDeck(deck.list) : buildDeck(); renderCards(); }
@@ -709,18 +1062,18 @@
       <div class="section-title" style="margin-top:4px">出題範囲</div>
       ${catChips(quizOpts.cat)}
       <div class="section-title">問題数</div>
-      <div class="seg">${[5, 10, 20, 30].map((n) => `<button class="chip glass press ${st.quizCount === n ? "on" : ""}" data-count="${n}"><span>${n}問</span></button>`).join("")}</div>
+      <div class="seg">${[5, 10, 20, 30].map((n) => `<button class="chip glass press ${st.quizCount === n ? "on" : ""}" data-count-opt="${n}"><span>${n}問</span></button>`).join("")}</div>
       <div class="section-title">形式</div>
       <div class="seg">${[["mix", "ミックス"], ["w2m", "語 → 意味"], ["m2w", "意味 → 語"]].map(([v, l]) => `<button class="chip glass press ${st.quizMode === v ? "on" : ""}" data-mode="${v}"><span>${l}</span></button>`).join("")}</div>
       <div style="height:26px"></div>
       <button class="btn primary block press" data-act="start" ${pool.length < 2 ? "disabled" : ""}><span>スタート（${Math.min(st.quizCount, pool.length)}問）</span></button>
-      <div class="btn-row"><button class="btn glass press" data-act="weak"><span>苦手から出題</span></button></div>`;
+      <div class="btn-row"><button class="btn glass press" data-act="weak"><span>${icon("flag")}苦手から出題</span></button></div>`;
 
     view.onclick = (e) => {
       const cat = e.target.closest("[data-cat]");
       if (cat) { quizOpts.cat = cat.dataset.cat; return renderQuizSetup(); }
-      const cnt = e.target.closest("[data-count]");
-      if (cnt) { st.quizCount = Number(cnt.dataset.count); save(); return renderQuizSetup(); }
+      const cnt = e.target.closest("[data-count-opt]");
+      if (cnt) { st.quizCount = Number(cnt.dataset.countOpt); save(); return renderQuizSetup(); }
       const md = e.target.closest("[data-mode]");
       if (md) { st.quizMode = md.dataset.mode; save(); return renderQuizSetup(); }
       const act = e.target.closest("[data-act]");
@@ -728,7 +1081,7 @@
       if (act.dataset.act === "start") startQuiz(shuffle(pool).slice(0, st.quizCount));
       else {
         const weak = WORDS.filter((w) => isWeak(w.word));
-        if (!weak.length) return toast("苦手な単語はまだありません");
+        if (!weak.length) return toast("苦手な語はまだありません");
         startQuiz(shuffle(weak).slice(0, st.quizCount));
       }
     };
@@ -743,8 +1096,8 @@
   }
 
   function startQuiz(words) {
-    if (!words.length) return toast("出題できる単語がありません");
-    quiz = { qs: words.map(makeQuestion), i: 0, score: 0, missed: [] };
+    if (!words.length) return toast("出題できる語がありません");
+    quiz = { qs: words.map(makeQuestion), i: 0, score: 0, combo: 0, best: 0, missed: [] };
     renderQuestion();
   }
 
@@ -761,10 +1114,11 @@
         <div class="q-kind">${isW2M ? "この語の意味は？" : "この意味を表す語は？"}</div>
         ${isW2M ? `<div class="q-word fit" style="${fitLen(q.w)}">${esc(q.w.word)}</div>` : `<div class="q-meaning">${esc(q.w.meaning)}</div>`}
       </div>
-      <div class="options">
+      <div class="options stagger">
         ${q.options.map((o, i) => `<button class="opt glass press ${isW2M ? "" : "serif"}" data-opt="${i}"><span class="no">${i + 1}</span><span>${esc(isW2M ? o.meaning : o.word)}</span></button>`).join("")}
       </div>
       <div id="fb"></div>`;
+    stagger(view, 80, 50);
 
     view.onclick = (e) => {
       const b = e.target.closest("[data-opt]");
@@ -780,11 +1134,14 @@
     const p = prog(q.w.word);
     if (correct) {
       quiz.score++;
+      quiz.combo++;
+      quiz.best = Math.max(quiz.best, quiz.combo);
       const streak = (p.streak || 0) + 1;
-      setProg(q.w.word, { ok: (p.ok || 0) + 1, streak, s: streak >= 2 ? MASTERED : Math.max(p.s || 0, LEARNING) });
+      logAnswer(q.w.word, true, "q", { ok: (p.ok || 0) + 1, streak, s: streak >= 2 ? MASTERED : Math.max(p.s || 0, LEARNING) });
     } else {
+      quiz.combo = 0;
       quiz.missed.push(q.w);
-      setProg(q.w.word, { ng: (p.ng || 0) + 1, streak: 0, s: LEARNING });
+      logAnswer(q.w.word, false, "q", { ng: (p.ng || 0) + 1, streak: 0, s: LEARNING });
     }
     $$(".opt", view).forEach((el, i) => {
       el.disabled = true;
@@ -792,12 +1149,13 @@
       else if (i === idx) el.classList.add("wrong");
       else el.classList.add("dim");
     });
+    if (correct) burst($$(".opt", view)[idx], quiz.combo >= 3 ? 18 : 12);
     if (navigator.vibrate) navigator.vibrate(correct ? 12 : [20, 40, 20]);
     const last = quiz.i === quiz.qs.length - 1;
     $("#fb").innerHTML = `
       <div class="feedback glass">
-        <div style="font-weight:700;color:${correct ? "var(--good)" : "var(--bad)"};margin-bottom:4px">${correct ? "正解！" : "不正解"}</div>
-        <div>${q.w.no !== null ? `<span class="fb-no">${esc(noLabel(q.w))}</span>` : ""}<b>${esc(q.w.word)}</b>（${esc(q.w.reading)}）</div>
+        <div class="fb-head ${correct ? "ok" : "ng"}">${icon(correct ? "check" : "x")}${correct ? "正解！" : "不正解"}${correct && quiz.combo >= 2 ? `<span class="combo">${quiz.combo}連続</span>` : ""}</div>
+        <div>${q.w.no !== null ? `<span class="fb-no">${esc(noLabel(q.w))}</span>` : ""}<b>${esc(q.w.word)}</b>${q.w.reading ? `（${esc(q.w.reading)}）` : ""}</div>
         <div style="margin-top:2px">${esc(q.w.meaning)}</div>
         ${q.w.example ? `<div style="margin-top:6px;color:var(--ink-2);font-family:var(--font-serif)">例）${esc(q.w.example)}</div>` : ""}
       </div>
@@ -814,13 +1172,16 @@
     const msg = r === 1 ? "パーフェクト！" : r >= 0.8 ? "すばらしい！" : r >= 0.5 ? "いい調子。" : "復習してもう一度！";
     view.innerHTML = `
       <div class="glass result">
-        <div class="score">${quiz.score}<span style="font-size:28px"> / ${n}</span></div>
+        <div class="badge-ico shine">${icon(r >= 0.8 ? "trophy" : "target")}</div>
+        <div class="score"><span data-count="${quiz.score}">${quiz.score}</span><span style="font-size:28px"> / ${n}</span></div>
         <div class="msg">${msg}</div>
-        <p style="color:var(--ink-2);margin:0 0 18px">正答率 ${Math.round(r * 100)}%</p>
+        <p class="note">正答率 ${Math.round(r * 100)}%${quiz.best >= 2 ? ` ・ 最高 ${quiz.best}連続正解` : ""}</p>
         <button class="btn primary block press" data-act="retry"><span>もう一度</span></button>
         ${quiz.missed.length ? `<div class="btn-row"><button class="btn glass press" data-act="miss"><span>間違えた${quiz.missed.length}問を解き直す</span></button></div>` : ""}
       </div>
-      ${quiz.missed.length ? `<div class="section-title">間違えた単語</div><div class="word-list" id="missList">${quiz.missed.map(wordRow).join("")}</div>` : ""}`;
+      ${quiz.missed.length ? `<div class="section-title">間違えた語</div><div class="word-list" id="missList">${quiz.missed.map(wordRow).join("")}</div>` : ""}`;
+    countUp();
+    if (r >= 0.8) setTimeout(() => burst($(".badge-ico", view), 22), 250);
     view.onclick = (e) => {
       const act = e.target.closest("[data-act]");
       if (!act) return;
@@ -831,7 +1192,7 @@
     if (ml) bindWordRows(ml);
   }
 
-  // ---------- 単語一覧 ----------
+  // ---------- 一覧 ----------
   const listOpts = { q: "", cat: "all", st: "all" };
 
   VIEWS.list = () => {
@@ -885,15 +1246,15 @@
       const ws = WORDS.filter((w) => isWeak(w.word));
       view.innerHTML = ws.length
         ? `<div class="glass setting">
-            <h3>苦手な単語 ${ws.length}語</h3>
+            <h3>苦手な語 ${ws.length}語</h3>
             <p>カードやクイズで間違えた語と、★をつけた語がここに集まります。</p>
             <div class="btn-row" style="margin-top:0">
-              <button class="btn glass press" data-act="cards"><span>カードで復習</span></button>
-              <button class="btn primary press" data-act="quiz"><span>クイズ</span></button>
+              <button class="btn glass press" data-act="cards"><span>${icon("cards")}カードで復習</span></button>
+              <button class="btn primary press" data-act="quiz"><span>${icon("quiz")}クイズ</span></button>
             </div>
           </div>
           <div class="word-list" id="weakList">${ws.map(wordRow).join("")}</div>`
-        : `<div class="glass result"><div style="font-size:44px">✨</div><div class="msg">苦手な単語はありません</div><p style="color:var(--ink-2)">カードやクイズで間違えた語、★をつけた語がここに表示されます。</p></div>`;
+        : emptyCard("sparkle", "苦手な語はありません", "カードやクイズで間違えた語、★をつけた語がここに表示されます。");
       const wl = $("#weakList");
       if (wl) bindWordRows(wl, render);
       view.onclick = (e) => {
@@ -906,45 +1267,154 @@
     render();
   };
 
+  // ---------- 記録 ----------
+  const recOpts = { scope: "subject" };
+
+  VIEWS.records = () => {
+    const sid = recOpts.scope === "subject" && SUBJ ? SID : null;
+    const sm = summary(sid);
+    const days = daily(sid, 14);
+    const max = Math.max(1, ...days.map((d) => d.n));
+    const tipText = (d) => `${d.today ? "今日" : `${d.m}/${d.day}`}　${d.n}問${d.n ? ` ・ 正答率 ${rate(d.ok, d.n)}%` : ""}`;
+    const kpi = (ico, val, unit, label) =>
+      `<div class="kpi glass">${icon(ico)}<b>${val === null ? "–" : `<span data-count="${val}">${val}</span><em>${unit}</em>`}</b><small>${label}</small></div>`;
+    const recent = logOf(sid).slice(-40).reverse();
+
+    // 教科別（全教科のとき）／単元別（教科を選んでいるとき）
+    let breakdown = "";
+    if (!sid) {
+      breakdown = `<div class="section-title">教科別</div><div class="cat-list stagger">${SUBJECTS.map((s) => {
+        const l = logOf(s.id);
+        const ok = l.reduce((a, e) => a + e.ok, 0);
+        const m = masteredIn(s);
+        const pct = rate(m, s.words.length);
+        return `<button class="cat-item glass press" data-subject="${esc(s.id)}" style="${subjStyle(s)}">
+          <span class="subj-ini sm">${esc(subjInitial(s))}</span>
+          <div class="grow">
+            <div class="row-top"><span class="cat-name">${esc(s.name)}</span><span class="cat-count">${s.words.length ? `習得 ${pct}%` : "準備中"}</span></div>
+            <div class="mini-bar subj"><i class="grow-x" style="width:${pct}%"></i></div>
+            <div class="row-sub">${l.length ? `正答率 ${rate(ok, l.length)}% ・ ${l.length}問` : "まだ解いていません"}</div>
+          </div>
+        </button>`;
+      }).join("")}</div>`;
+    } else if (WORDS.length) {
+      const catOf = new Map(WORDS.map((w) => [w.word, w.category]));
+      const byCat = new Map();
+      for (const e of logOf(SID)) {
+        const c = catOf.get(e.w);
+        if (!c) continue;
+        const v = byCat.get(c) || { n: 0, ok: 0 };
+        v.n++;
+        v.ok += e.ok;
+        byCat.set(c, v);
+      }
+      breakdown = `<div class="section-title">単元別</div><div class="cat-list stagger">${CATEGORIES.map((cat) => {
+        const ws = WORDS.filter((w) => w.category === cat);
+        const m = counts(ws)[MASTERED];
+        const v = byCat.get(cat) || { n: 0, ok: 0 };
+        return `<div class="cat-item glass">
+          <div class="grow">
+            <div class="row-top"><span class="cat-name">${esc(cat)}</span><span class="cat-count">習得 ${m} / ${ws.length}</span></div>
+            <div class="mini-bar"><i class="grow-x" style="width:${(m / ws.length) * 100}%"></i></div>
+            <div class="row-sub">${v.n ? `正答率 ${rate(v.ok, v.n)}% ・ ${v.n}問` : "まだ解いていません"}</div>
+          </div>
+        </div>`;
+      }).join("")}</div>`;
+    }
+
+    view.innerHTML = `
+      ${SUBJ ? `<div class="seg-ctl" role="tablist">${[["subject", SUBJ.name], ["all", "全教科"]].map(([v, l]) => `<button role="tab" aria-selected="${recOpts.scope === v}" class="${recOpts.scope === v ? "on" : ""}" data-scope="${v}">${esc(l)}</button>`).join("")}</div>` : ""}
+      <div class="kpi-grid stagger">
+        ${kpi("calendar", sm.tn, "問", "今日の解答")}
+        ${kpi("flame", sm.streak, "日", "連続学習")}
+        ${kpi("layers", sm.n, "問", "これまでの解答")}
+        ${kpi("target", sm.n ? rate(sm.ok, sm.n) : null, "%", "正答率")}
+      </div>
+
+      <div class="glass chart-card">
+        <div class="chart-head"><h3>直近14日の解答数</h3><span class="chart-tip" id="chartTip">${esc(tipText(days[days.length - 1]))}</span></div>
+        <div class="bars">
+          <span class="bars-max"><span>${max}問</span></span>
+          ${days.map((d, i) => `<button class="bar-col ${d.today ? "today sel" : ""}" data-i="${i}" aria-label="${esc(tipText(d))}"><i class="bar" style="height:${d.n ? Math.max(3, (d.n / max) * 100) : 0}%;--i:${i}"></i></button>`).join("")}
+        </div>
+        <div class="bars-x">${days.map((d, i) => `<span>${d.today ? "今日" : i === 0 || i === 7 ? `${d.m}/${d.day}` : ""}</span>`).join("")}</div>
+      </div>
+
+      ${breakdown}
+
+      <div class="section-title">最近の解答</div>
+      ${recent.length
+        ? `<div class="glass log-card">${recent.map((e) => {
+            const s = subjectById(e.s);
+            const open = e.s === SID && BY_WORD.has(e.w);
+            return `<div class="log-row ${e.ok ? "ok" : "ng"} ${open ? "press" : ""}" ${open ? `data-word="${esc(e.w)}" role="button" tabindex="0"` : ""}>
+              <span class="log-mark">${icon(e.ok ? "check" : "x")}</span>
+              <div class="grow"><div class="log-w">${esc(e.w)}</div><div class="log-sub">${!sid && s ? `${esc(s.name)} ・ ` : ""}${e.m === "q" ? "クイズ" : "カード"} ・ ${e.ok ? "正解" : "不正解"}</div></div>
+              <span class="log-t">${esc(relTime(e.t))}</span>
+            </div>`;
+          }).join("")}</div>`
+        : emptyCard("chart", "まだ記録がありません", "暗記カードや4択クイズで解くと、ここに履歴と正答率がたまっていきます。")}`;
+
+    const tip = $("#chartTip");
+    const pick = (col) => {
+      if (!col) return;
+      $$(".bar-col", view).forEach((b) => b.classList.toggle("sel", b === col));
+      tip.textContent = tipText(days[Number(col.dataset.i)]);
+    };
+    $$(".bar-col", view).forEach((b) => b.addEventListener("pointerenter", () => pick(b)));
+    view.onclick = (e) => {
+      const sc = e.target.closest("[data-scope]");
+      if (sc) { recOpts.scope = sc.dataset.scope; return rerender(); }
+      const col = e.target.closest(".bar-col");
+      if (col) return pick(col);
+      const s = e.target.closest("[data-subject]");
+      if (s) { recOpts.scope = "subject"; return switchSubject(s.dataset.subject, e.clientX, e.clientY); }
+      const row = e.target.closest("[data-word]");
+      if (row) openWordSheet(row.dataset.word);
+    };
+  };
+
   // ---------- 設定 ----------
   VIEWS.settings = () => {
     const at = DATA.fetchedAt();
     const atLabel = at ? new Date(at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-    const subjects = DATA.subjects();
     view.innerHTML = `
       <div class="glass setting">
-        <h3>問題データ</h3>
+        <h3>${icon("refresh")}問題データ</h3>
         <p>${DATA.hasData()
-          ? `${subjects.map((s) => `${esc(s.name)}（${s.items.length}）`).join(" / ")}<br>最終取得：${esc(atLabel)}`
+          ? `${SUBJECTS.map((s) => `${esc(s.name)}（${s.words.length}）`).join(" / ")}<br>最終取得：${esc(atLabel)}`
           : "まだ読み込んでいません。"}</p>
         ${DATA.hasToken()
           ? `<div class="btn-row">
-               <button class="btn glass press primary" data-act="refresh"><span>今すぐ更新</span></button>
+               <button class="btn press primary" data-act="refresh"><span>今すぐ更新</span></button>
                <button class="btn glass press" data-act="forget"><span>トークンを削除</span></button>
              </div>`
           : `<label class="search glass">
                <input id="tokenIn" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
              </label>
-             <button class="btn glass press primary block" data-act="save" style="margin-top:10px"><span>保存して読み込む</span></button>
+             <button class="btn press primary block" data-act="save" style="margin-top:10px"><span>保存して読み込む</span></button>
              <p style="margin-top:12px">トークンの作り方：GitHub の <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token の作成画面</a> で、Repository access を「Only select repositories → ${esc(DATA.repo.split("/")[1])}」、Permissions の Contents を「Read-only」にして作成します。トークンはこの端末の中にだけ保存されます。</p>`}
         <p id="dataMsg" style="margin:10px 0 0" hidden></p>
       </div>
       ${WORDS.length ? `<div class="glass setting">
-        <h3>収録データ</h3>
-        <p>${WORDS.length}語 ・ ${CATEGORIES.length}カテゴリ<br>${CATEGORIES.map(esc).join(" / ")}</p>
+        <h3>${icon("book")}${esc(SUBJ.name)}の収録データ</h3>
+        <p>${WORDS.length}語 ・ ${CATEGORIES.length}単元<br>${CATEGORIES.map(esc).join(" / ")}</p>
       </div>` : ""}
       <div class="glass setting">
-        <h3>問題の追加</h3>
+        <h3>${icon("layers")}問題の追加</h3>
         <p><code>${esc(DATA.repo)}</code> の <code>subjects/</code> にある JSON に問題を足して push すると、次にアプリを開いたとき（または「今すぐ更新」）に反映されます。</p>
       </div>
       <div class="glass setting">
-        <h3>ホーム画面に追加</h3>
+        <h3>${icon("home")}ホーム画面に追加</h3>
         <p>共有メニューから「ホーム画面に追加」すると、全画面のアプリとして使えます（ブラウザの「戻る」も出ません）。</p>
       </div>
       <div class="glass setting">
-        <h3>学習記録をリセット</h3>
-        <p>すべての進み具合・★をこの端末から消去します。</p>
-        <button class="btn glass press tint-bad block" data-act="reset"><span>リセットする</span></button>
+        <h3>${icon("x")}学習記録をリセット</h3>
+        <p>進み具合・★・解答の履歴をこの端末から消去します。</p>
+        <div class="btn-row" style="margin-top:0">
+          ${SUBJ ? `<button class="btn glass press tint-bad" data-act="reset-subj"><span>${esc(SUBJ.name)}だけ</span></button>` : ""}
+          <button class="btn glass press tint-bad" data-act="reset-all"><span>すべて</span></button>
+        </div>
       </div>`;
     const msg = (text) => {
       const m = $("#dataMsg");
@@ -957,28 +1427,36 @@
         (changed) => {
           if (token) DATA.setToken(token);
           if (changed) { toast("問題を読み込みました"); setTimeout(() => location.reload(), 500); }
-          else { toast("最新です"); VIEWS.settings(); }
+          else { toast("最新です"); rerender(); }
         },
         (err) => msg(err.message),
       );
     };
     view.onclick = (e) => {
       const act = e.target.closest("[data-act]");
-      if (act && act.dataset.act === "save") {
+      if (!act) return;
+      const a = act.dataset.act;
+      if (a === "save") {
         const token = $("#tokenIn").value.trim();
         if (!token) return msg("トークンを貼り付けてください。");
         return load(token);
       }
-      if (act && act.dataset.act === "refresh") return load();
-      if (act && act.dataset.act === "forget") {
+      if (a === "refresh") return load();
+      if (a === "forget") {
         if (!confirm("この端末からトークンを削除しますか？（読み込み済みの問題と学習記録は残ります）")) return;
         DATA.clearToken();
         toast("トークンを削除しました");
-        return VIEWS.settings();
+        return rerender();
       }
-      if (!e.target.closest("[data-act=reset]")) return;
-      if (!confirm("学習記録をすべて消去しますか？")) return;
-      store.progress = {};
+      if (a === "reset-subj") {
+        if (!confirm(`${SUBJ.name}の学習記録と解答履歴を消去しますか？`)) return;
+        delete store.progress[SID];
+        store.log = store.log.filter((x) => x.s !== SID);
+      } else if (a === "reset-all") {
+        if (!confirm("すべての教科の学習記録と解答履歴を消去しますか？")) return;
+        store.progress = {};
+        store.log = [];
+      } else return;
       save();
       deck = null;
       toast("リセットしました");
@@ -1010,6 +1488,12 @@
   $("#menuBtn").addEventListener("click", () => (isOpen() ? closeDrawer() : openDrawer()));
   scrim.addEventListener("click", closeDrawer);
   drawer.addEventListener("click", (e) => {
+    const s = e.target.closest("[data-subject]");
+    if (s) {
+      closeDrawer();
+      switchSubject(s.dataset.subject, e.clientX, e.clientY);
+      return;
+    }
     const b = e.target.closest("[data-nav]");
     if (!b) return;
     closeDrawer();
@@ -1107,12 +1591,12 @@
   const standalone = navigator.standalone === true ||
     window.matchMedia("(display-mode: standalone)").matches ||
     window.matchMedia("(display-mode: fullscreen)").matches;
-  const GUARD = { gendaibunGuard: true };
+  const GUARD = { kotaelogGuard: true };
   const armGuard = () => {
     if (standalone) return;
-    if (!(history.state && history.state.gendaibunGuard)) history.pushState(GUARD, "");
+    if (!(history.state && history.state.kotaelogGuard)) history.pushState(GUARD, "");
   };
-  history.replaceState({ gendaibunBase: true }, "");
+  history.replaceState({ kotaelogBase: true }, "");
   armGuard();
   window.addEventListener("popstate", () => {
     armGuard();
@@ -1131,6 +1615,18 @@
   });
 
   // ---------- 起動 ----------
+  $("#drawerNav").innerHTML = NAV.map(([k, t, ic], i) => `<li style="--i:${i}"><button data-nav="${k}"><span class="ni">${icon(ic)}</span>${t}</button></li>`).join("");
+  $("#subjPill").addEventListener("click", openSubjectSheet);
+  renderChrome();
+
+  // 現代文単語アプリ時代の記録を引き継いだら、新しいキーに保存して古いキーは消す
+  try {
+    if (localStorage.getItem(OLD_KEY) !== null) {
+      save();
+      localStorage.removeItem(OLD_KEY);
+    }
+  } catch (_) {}
+
   go("home");
 
   // 裏で最新の問題を取りに行く。変わっていたら、ホームにいるときだけすぐ読み込み直す

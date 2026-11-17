@@ -25,10 +25,6 @@
   try { data = JSON.parse(ls.get(DATA_KEY)); } catch (_) {}
   if (!data || !Array.isArray(data.subjects)) data = null;
 
-  // いまは最初の教科を使う（教科の切り替えは別途）
-  const subject = data && data.subjects[0];
-  window.WORDS = subject ? subject.items : [];
-
   const fail = (status, message) => Object.assign(new Error(message), { status });
 
   async function getFile(path, token) {
@@ -61,7 +57,13 @@
     const list = Array.isArray(index && index.subjects) ? index.subjects : [];
     const subjects = await Promise.all(list.map(async (s) => {
       const f = await getFile(s.file, token);
-      return { id: String(s.id), name: String(s.name || (f && f.name) || s.id), items: Array.isArray(f && f.items) ? f.items : [] };
+      return {
+        id: String(s.id),
+        name: String(s.name || (f && f.name) || s.id),
+        // 教科の色 [メイン, グラデーションの相方]（任意。無ければアプリ側で決める）
+        color: Array.isArray(s.color) ? s.color.slice(0, 2).map(String) : null,
+        items: Array.isArray(f && f.items) ? f.items : [],
+      };
     }));
     return { subjects, fetchedAt: Date.now() };
   }

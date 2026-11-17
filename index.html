@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <title>コタエログ</title>
-  <meta name="description" content="全教科の一問一答を、カード・クイズ・一覧で覚えて記録する学習アプリ。">
+  <meta name="description" content="現代国語・英語・生物・化学・地理・歴史の一問一答を、カード・クイズで覚えて記録する学習アプリ。">
   <meta name="theme-color" content="#1b1f3b">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=16">
+  <link rel="stylesheet" href="css/style.css?v=17">
 </head>
 <body>
   <!-- 背景（ガラス越しに透ける色の層） -->
@@ -33,6 +33,10 @@
     </button>
     <h1 class="topbar-title" id="viewTitle">ホーム</h1>
     <span class="topbar-badge" id="topBadge"></span>
+    <button class="subj-pill" id="subjPill" aria-label="教科を切り替える" hidden>
+      <span class="subj-dot"></span><span id="subjName"></span>
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m6.5 9.5 5.5 5.5 5.5-5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
   </header>
 
   <main id="view" class="view"></main>
@@ -41,20 +45,18 @@
   <div class="scrim" id="scrim"></div>
   <nav class="drawer glass" id="drawer" aria-label="メニュー" aria-hidden="true">
     <div class="drawer-head">
-      <div class="drawer-logo">語</div>
+      <div class="drawer-logo">答</div>
       <div>
         <div class="drawer-title">コタエログ</div>
         <div class="drawer-sub" id="drawerSub"></div>
       </div>
     </div>
-    <ul class="drawer-nav">
-      <li><button data-nav="home"><span class="ni">⌂</span>ホーム</button></li>
-      <li><button data-nav="cards"><span class="ni">❏</span>単語カード</button></li>
-      <li><button data-nav="quiz"><span class="ni">✎</span>4択クイズ</button></li>
-      <li><button data-nav="list"><span class="ni">☰</span>単語一覧</button></li>
-      <li><button data-nav="weak"><span class="ni">!</span>苦手な単語</button></li>
-      <li><button data-nav="settings"><span class="ni">⚙</span>設定</button></li>
-    </ul>
+    <div id="drawerSubjWrap" hidden>
+      <div class="drawer-section">教科</div>
+      <ul class="drawer-subjects" id="drawerSubjects"></ul>
+    </div>
+    <div class="drawer-section">メニュー</div>
+    <ul class="drawer-nav" id="drawerNav"></ul>
     <p class="drawer-hint">左→右スワイプでいつでも開けます</p>
   </nav>
 
@@ -65,7 +67,7 @@
 
   <div class="toast glass" id="toast"></div>
 
-  <script src="js/data.js?v=1"></script>
-  <script src="js/app.js?v=17"></script>
+  <script src="js/data.js?v=2"></script>
+  <script src="js/app.js?v=18"></script>
 </body>
 </html>
