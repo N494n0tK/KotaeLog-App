@@ -15,7 +15,7 @@
   function normalize(items, subjectName) {
     const seen = new Set();
     const seenNo = new Set();
-    const list = (items || [])
+    const list = (Array.isArray(items) ? items : [])
       .filter((w) => w && w.word && w.meaning && !seen.has(w.word) && seen.add(w.word))
       .map((w) => ({
         no: w.no === undefined || w.no === null || w.no === "" ? null : w.no,
@@ -51,9 +51,9 @@
   // 教科の一覧（新しい問題を取得したら作り直す）
   let SUBJECTS = [];
   function loadSubjects() {
-    SUBJECTS = DATA.subjects().map((s, i) => ({
+    SUBJECTS = DATA.subjects().filter(s => s?.id != null).map((s, i) => ({
       id: String(s.id),
-      name: String(s.name),
+      name: String(s.name || s.id),
       color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
       words: normalize(s.items, s.name),
     }));
@@ -93,22 +93,32 @@
     }
   } catch (_) { /* 保存領域が使えない環境ではメモリのみ */ }
 
+  let reportedSaveFailure = false;
   const save = () => {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(store));
     } catch (_) {
-      // 容量がいっぱいのときは、古い解答履歴から削ってもう一度
+      // 短縮した履歴を書き込めた場合だけ、メモリ内の履歴も短くする。
       if (store.log.length > 500) {
-        store.log = store.log.slice(-Math.floor(store.log.length / 2));
-        try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (__) {}
+        const log = store.log.slice(-Math.floor(store.log.length / 2));
+        try {
+          localStorage.setItem(STORE_KEY, JSON.stringify({ ...store, log }));
+          store.log = log;
+          return true;
+        } catch (_) { /* メモリ内の記録で続ける */ }
       }
+      if (!reportedSaveFailure) toast("端末に保存できません。今回の変更は画面を閉じると失われます");
+      reportedSaveFailure = true;
+      return false;
     }
+    reportedSaveFailure = false;
+    return true;
   };
   const progMap = (sid = SID) => store.progress[sid] || (store.progress[sid] = {});
   const progIn = (sid, word) => progMap(sid)[word] || { s: NEW, ok: 0, ng: 0, streak: 0, star: false };
   const prog = (word) => progIn(SID, word);
   const setProg = (word, patch) => {
-    progMap()[word] = Object.assign(prog(word), patch, { t: Date.now() });
+    progMap()[word] = Object.assign({}, prog(word), patch, { t: Date.now() });
     save();
   };
   const statusOf = (word) => prog(word).s || NEW;
@@ -121,9 +131,11 @@
   // 解答を1件記録する（カード = c / クイズ = q）。直近10回の結果は語ごとにも持っておく
   function logAnswer(word, ok, mode, patch) {
     const h = ((prog(word).h || "") + (ok ? "1" : "0")).slice(-10);
-    store.log.push({ t: Date.now(), s: SID, w: word, ok: ok ? 1 : 0, m: mode });
+    const entry = { t: Date.now(), s: SID, w: word, ok: ok ? 1 : 0, m: mode };
+    store.log.push(entry);
     if (store.log.length > MAX_LOG) store.log.splice(0, store.log.length - MAX_LOG);
     setProg(word, Object.assign({ h }, patch));
+    return entry;
   }
 
   // ---------- 記録の集計 ----------
@@ -233,13 +245,13 @@
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove("show"), 1800);
+    toastTimer = setTimeout(() => t.classList.remove("show"), Math.max(2200, Math.min(6000, msg.length * 110)));
   }
 
   // ---------- ガラスに触れたときの質感 ----------
   // 押す：指の位置に光が集まり、縁が光り、少し沈んで指の方へ引っぱられる
   // 離す：ぷるんと揺れて戻り、指の位置から波紋が広がる（＋対応端末では軽い触覚フィードバック）
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
   let pressed = null;
 
   // iOS 18 以降の Safari は、スイッチ型チェックボックスを切り替えると触覚フィードバックが出る
@@ -302,7 +314,7 @@
     el.style.setProperty("--pull-y", "0px");
     if (!tap || !el.isConnected) return;
     haptic();
-    if (reduceMotion) return;
+    if (motionPreference.matches) return;
     // カード本体はめくる動きがあるので、揺れと波紋はボタン類だけ
     if (!el.matches(".face")) {
       jelly(el, k);
@@ -312,7 +324,8 @@
 
   document.addEventListener("pointerdown", (e) => {
     const el = e.target.closest(".press");
-    if (!el || el.disabled || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (!e.isPrimary || !el || el.disabled || e.button !== 0) return;
+    release(false);
     const r = el.getBoundingClientRect();
     const lx = e.clientX - r.left;
     const ly = e.clientY - r.top;
@@ -340,7 +353,8 @@
   }, { passive: true });
 
   document.addEventListener("pointerup", (e) => { if (pressed && e.pointerId === pressed.id) release(true); }, { passive: true });
-  document.addEventListener("pointercancel", () => release(false), { passive: true });
+  document.addEventListener("pointercancel", e => { if (pressed?.id === e.pointerId) release(false); }, { passive: true });
+  window.addEventListener("blur", () => release(false));
 
   // ---------- アイコン（線の太さ・角の丸みを揃えた自前のセット） ----------
   const ICON = {
@@ -380,31 +394,32 @@
       if (el.dataset.counted) return;
       el.dataset.counted = "1";
       const to = Number(el.dataset.count) || 0;
-      const from = Number(el.dataset.from) || 0;
-      if (reduceMotion || to === from) { el.textContent = String(to); return; }
+      const from = el.dataset.from === undefined ? to : Number(el.dataset.from) || 0;
+      if (motionPreference.matches || to === from) { el.textContent = String(to); return; }
       const t0 = performance.now();
-      const dur = el.dataset.from !== undefined ? 520 : 700 + Math.min(600, to * 6);
+      const dur = 420;
       el.textContent = String(from);
       const tick = (now) => {
-        const k = Math.min(1, (now - t0) / dur);
+        if (!el.isConnected) return;
+        const k = motionPreference.matches ? 1 : Math.min(1, (now - t0) / dur);
         el.textContent = String(Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3))));
-        if (k < 1 && el.isConnected) requestAnimationFrame(tick);
+        if (k < 1) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     });
   }
   // 描き直す前の数字を data-k ごとに覚えておき、描き直したあとの数字の data-from に入れる
-  const readCounts = (root) => Object.fromEntries($$("[data-k]", root).map((el) => [el.dataset.k, el.dataset.count]));
+  const readCounts = (root) => Object.fromEntries($$("[data-k]", root).map((el) => [el.dataset.k, el.textContent]));
   const applyFrom = (root, prev) => $$("[data-k]", root).forEach((el) => { if (prev[el.dataset.k] !== undefined) el.dataset.from = prev[el.dataset.k]; });
 
   // .stagger の子を少しずつ遅らせて出す
-  function stagger(root = view, base = 60, step = 45) {
-    $$(".stagger", root).forEach((box) => [...box.children].forEach((c, i) => c.style.setProperty("--d", `${base + i * step}ms`)));
+  function stagger(root = view, base = 20, step = 24) {
+    $$(".stagger", root).forEach((box) => [...box.children].forEach((c, i) => c.style.setProperty("--d", `${base + Math.min(i, 4) * step}ms`)));
   }
 
   // 正解したときに弾ける光の粒
   function burst(el, n = 14) {
-    if (reduceMotion || !el || !el.isConnected) return;
+    if (motionPreference.matches || !el || !el.isConnected) return;
     const r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
@@ -429,7 +444,8 @@
 
   // 教科を切り替えたとき、押した場所から新しい教科の色が広がる
   function themeWave(x, y) {
-    if (reduceMotion || !SUBJ) return;
+    if (motionPreference.matches || !SUBJ) return;
+    $(".theme-wave")?.remove();
     const w = document.createElement("div");
     w.className = "theme-wave";
     w.style.setProperty("--w1", SUBJ.color[0]);
@@ -440,8 +456,8 @@
     const R = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 40;
     w.animate(
       [
-        { clipPath: `circle(0px at ${x}px ${y}px)`, opacity: 0.85 },
-        { clipPath: `circle(${R}px at ${x}px ${y}px)`, opacity: 0.5, offset: 0.55 },
+        { clipPath: `circle(0px at ${x}px ${y}px)`, opacity: 0.5 },
+        { clipPath: `circle(${R}px at ${x}px ${y}px)`, opacity: 0.28, offset: 0.55 },
         { clipPath: `circle(${R}px at ${x}px ${y}px)`, opacity: 0 },
       ],
       { duration: 950, easing: "cubic-bezier(.3,.7,.2,1)" }
@@ -466,7 +482,7 @@
   function setTitle(text) {
     if (titleEl.textContent === text) return;
     titleEl.textContent = text;
-    if (!reduceMotion) titleEl.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: "cubic-bezier(.22,.8,.24,1)" });
+    if (!motionPreference.matches) titleEl.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: "cubic-bezier(.22,.8,.24,1)" });
   }
 
   function go(name, params = {}) {
@@ -481,12 +497,8 @@
     setTitle(TITLES[name] || "");
     badgeEl.textContent = "";
     $$("#drawerNav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
-    const dock = $("#dock");
-    dock.hidden = name === "cards" || name === "quiz";
-    $$("button", dock).forEach((button) => {
-      if (button.dataset.nav === name) button.setAttribute("aria-current", "page");
-      else button.removeAttribute("aria-current");
-    });
+    updateDock();
+    release(false);
     enterAnim();
     window.scrollTo(0, 0);
     VIEWS[name](params);
@@ -505,11 +517,9 @@
   // （付けたままだと、あとから差し込んだ要素＝裏で用意した次のカードなどにも演出がかかってしまう）
   let enterTimer;
   function enterAnim() {
-    view.classList.remove("enter");
-    void view.offsetWidth;
-    view.classList.add("enter");
     clearTimeout(enterTimer);
-    enterTimer = setTimeout(() => view.classList.remove("enter"), 1100);
+    view.classList.toggle("enter", !motionPreference.matches);
+    if (!motionPreference.matches) enterTimer = setTimeout(() => view.classList.remove("enter"), 460);
   }
 
   function updateDrawerSub() {
@@ -549,16 +559,22 @@
   function openSubjMenu() {
     renderChrome();
     document.body.classList.add("menu-open");
+    syncOverlayAccess();
     $("#subjPill").setAttribute("aria-expanded", "true");
+    $("#subjMenu .on")?.focus({ preventScroll: true });
     $$("#subjMenu .subj-opt").forEach((b, i) => b.style.setProperty("--i", i));
   }
   function closeSubjMenu() {
+    if (!subjMenuOpen()) return;
     document.body.classList.remove("menu-open");
+    syncOverlayAccess();
+    $("#subjPill").focus({ preventScroll: true });
     $("#subjPill").setAttribute("aria-expanded", "false");
   }
   // サイドバーの教科プルダウン（開くと下に選択肢が出る）
   function toggleDrawerSubj(open = !$("#drawerSubjWrap").classList.contains("open")) {
     $("#drawerSubjWrap").classList.toggle("open", open);
+    $("#drawerSubjects").inert = !open;
     $("#drawerSubjBtn").setAttribute("aria-expanded", String(open));
   }
 
@@ -583,17 +599,19 @@
 
   const wordRow = (w) => {
     const p = prog(w.word);
-    return `<div class="word-row glass press" data-word="${esc(w.word)}" role="button" tabindex="0">
-      <span class="dot ${STATUS_CLASS[p.s || 0]}"></span>
-      <div class="grow">
-        <div class="w">${w.no !== null ? `<span class="num">${esc(noLabel(w))}</span>` : ""}${esc(w.word)} <span class="r">${esc(w.reading)}</span></div>
-        <div class="m">${esc(w.meaning)}</div>
-      </div>
+    return `<div class="word-row glass">
+      <button class="word-main press" data-word="${esc(w.word)}">
+        <span class="dot ${STATUS_CLASS[p.s || 0]}"></span>
+        <span class="grow">
+          <span class="w">${w.no !== null ? `<span class="num">${esc(noLabel(w))}</span>` : ""}${esc(w.word)} <span class="r">${esc(w.reading)}</span></span>
+          <span class="m">${esc(w.meaning)}</span>
+        </span>
+      </button>
       ${starBtn(w.word, p.star)}
     </div>`;
   };
 
-  const popStar = (el) => { if (!reduceMotion) el.animate([{ transform: "scale(.6) rotate(-20deg)" }, { transform: "scale(1.25) rotate(8deg)", offset: 0.5 }, { transform: "none" }], { duration: 450, easing: "ease-out" }); };
+  const popStar = (el) => { if (!motionPreference.matches) el.animate([{ transform: "scale(.6) rotate(-20deg)" }, { transform: "scale(1.25) rotate(8deg)", offset: 0.5 }, { transform: "none" }], { duration: 450, easing: "ease-out" }); };
 
   function bindWordRows(root, onChange) {
     root.addEventListener("click", (e) => {
@@ -611,7 +629,7 @@
         return;
       }
       const row = e.target.closest("[data-word]");
-      if (row) openWordSheet(row.dataset.word, onChange);
+      if (row) openWordSheet(row, onChange);
     });
   }
 
@@ -622,14 +640,18 @@
   const sheetWrap = $("#sheetWrap");
   const sheet = $("#sheet");
 
-  function openWordSheet(word, onChange) {
+  let sheetOpener = null;
+  function openWordSheet(row, onChange) {
+    const word = row.dataset.word;
     const w = BY_WORD.get(word);
     if (!w) return;
+    sheetOpener = row;
     const render = () => {
+      const scroll = sheetOpen() ? $(".sheet-body", sheet).scrollTop : 0;
       const p = prog(word);
       const n = (p.ok || 0) + (p.ng || 0);
       sheet.innerHTML = `
-        <div class="grab-zone" aria-label="下に引っ張って閉じる"><div class="grabber"></div></div>
+        <div class="grab-zone" aria-hidden="true"><div class="grabber"></div></div>
         <div class="sheet-body">
         <div class="sheet-tag">${w.no !== null ? `${esc(noLabel(w))} ・ ` : ""}${esc(w.category)}</div>
         <div class="back-word fit" style="margin-top:10px;${fitLen(w)}">${esc(w.word)}</div>
@@ -649,6 +671,7 @@
           <button class="btn small glass press" data-act="close"><span>閉じる</span></button>
         </div>
         </div>`;
+      $(".sheet-body", sheet).scrollTop = scroll;
     };
     render();
     sheet.onclick = (e) => {
@@ -656,6 +679,7 @@
       if (s) {
         setProg(word, { s: Number(s.dataset.s), streak: 0 });
         render();
+        $(`[data-s="${s.dataset.s}"]`, sheet).focus({ preventScroll: true });
         onChange && onChange();
         return;
       }
@@ -664,20 +688,34 @@
       if (act.dataset.act === "star") {
         setProg(word, { star: !prog(word).star });
         render();
+        $("[data-act=star]", sheet).focus({ preventScroll: true });
         onChange && onChange();
       } else closeSheet();
     };
     sheetWrap.classList.add("open");
+    syncOverlayAccess();
+    sheet.focus({ preventScroll: true });
   }
 
-  function closeSheet() { sheetWrap.classList.remove("open"); }
+  function closeSheet() {
+    if (!sheetOpen()) return;
+    sd = null;
+    sheetWrap.classList.remove("open", "dragging");
+    sheet.style.transform = "";
+    sheetWrap.style.removeProperty("--dim");
+    syncOverlayAccess();
+    const opener = sheetOpener?.isConnected ? sheetOpener :
+      $$("[data-word]", view).find(row => row.dataset.word === sheetOpener?.dataset.word);
+    (opener || $("#menuBtn")).focus({ preventScroll: true });
+    sheetOpener = null;
+  }
   sheetWrap.addEventListener("click", (e) => { if (e.target === sheetWrap) closeSheet(); });
   const sheetOpen = () => sheetWrap.classList.contains("open");
 
   // 上の掴み部分を下に引っ張って閉じる
   let sd = null;
   sheet.addEventListener("pointerdown", (e) => {
-    if (!e.target.closest(".grab-zone") || !sheetOpen()) return;
+    if (!e.isPrimary || e.button !== 0 || !e.target.closest(".grab-zone") || !sheetOpen()) return;
     const now = performance.now();
     sd = { id: e.pointerId, y0: e.clientY, y: e.clientY, py: e.clientY, pt: now, v: 0 };
     sheet.setPointerCapture(e.pointerId);
@@ -704,10 +742,11 @@
     sheetWrap.classList.remove("dragging");
     sheet.style.transform = "";
     sheetWrap.style.removeProperty("--dim");
-    if (v > 0.5 || (dy > Math.min(120, sheet.offsetHeight * 0.3) && v > -0.2)) closeSheet();
+    if (e.type === "pointerup" && (v > 0.5 || (dy > Math.min(120, sheet.offsetHeight * 0.3) && v > -0.2))) closeSheet();
   };
   sheet.addEventListener("pointerup", endSheetDrag);
   sheet.addEventListener("pointercancel", endSheetDrag);
+  sheet.addEventListener("lostpointercapture", endSheetDrag);
 
   // ============================================================
   // 画面
@@ -749,7 +788,10 @@
     deck = null;
   }
   const unitOn = (c) => { const u = unitSel(); return !u || u.includes(c); };
-  const rangeWords = () => WORDS.filter((w) => unitOn(w.category));
+  const rangeWords = () => {
+    const selected = unitSel();
+    return selected ? WORDS.filter(w => selected.includes(w.category)) : WORDS;
+  };
   const rangeLabel = () => {
     const u = unitSel();
     if (!u) return "すべての単元";
@@ -778,34 +820,35 @@
     strip.classList.toggle("glide", glide);
     if (!glide) return;
     const c = on[0];
-    if (!animate || reduceMotion) strip.classList.remove("ready");
+    if (!animate || motionPreference.matches) strip.classList.remove("ready");
     glider.style.width = `${c.offsetWidth}px`;
     glider.style.height = `${c.offsetHeight}px`;
     glider.style.transform = `translate(${c.offsetLeft}px, ${c.offsetTop}px)`;
-    if (!animate || reduceMotion) { void glider.offsetWidth; strip.classList.add("ready"); }
+    if (!animate || motionPreference.matches) { void glider.offsetWidth; strip.classList.add("ready"); }
   }
 
   // 文字の読み込みや画面の回転でタブの幅が変わったら、板の位置を合わせ直す
-  const stripObserver = "ResizeObserver" in window
-    ? new ResizeObserver((entries) => entries.forEach((en) => { const s = en.target.closest(".unit-strip"); if (s && s.isConnected) placeGlider(s, false); }))
-    : null;
-  if (document.fonts && document.fonts.addEventListener) {
-    document.fonts.addEventListener("loadingdone", () => $$(".unit-strip", view).forEach((s) => placeGlider(s, false)));
+  function alignStrips() {
+    $$(".unit-strip", view).forEach(strip => placeGlider(strip, false));
   }
-  function initStrips(root = view) {
-    $$(".unit-strip", root).forEach((s) => {
-      placeGlider(s, false);
-      if (stripObserver) $$(".chip", s).forEach((c) => stripObserver.observe(c));
+  window.addEventListener("resize", alignStrips);
+  document.fonts?.addEventListener("loadingdone", alignStrips);
+  function initStrips() {
+    alignStrips();
+    $$(".unit-strip", view).forEach(strip => {
+      const currentChip = $(".on", strip);
+      if (currentChip) revealChip(strip, currentChip, false);
     });
   }
 
   // 選んだタブが帯の外にはみ出していたら、見える位置までスクロールする
-  function revealChip(strip, chip) {
+  function revealChip(strip, chip, animate = true) {
+    const behavior = animate && !motionPreference.matches ? "smooth" : "auto";
     const pad = 28;
     const l = chip.offsetLeft;
     const r = l + chip.offsetWidth;
-    if (l - pad < strip.scrollLeft) strip.scrollTo({ left: Math.max(0, l - pad), behavior: "smooth" });
-    else if (r + pad > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: r + pad - strip.clientWidth, behavior: "smooth" });
+    if (l - pad < strip.scrollLeft) strip.scrollTo({ left: Math.max(0, l - pad), behavior });
+    else if (r + pad > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: r + pad - strip.clientWidth, behavior });
   }
 
   // 帯のタップを処理したら true。onChange(dir) には、右のタブへ移ったら 1、左なら -1 が渡る
@@ -833,13 +876,12 @@
   }
 
   // タブを切り替えたときに中身を横から差し替える演出（ガラスは自分自身にだけ透明度をかける）
-  const slideIn = (root, dir) => slideEls($$(".glass, .section-title, .count-note", root), dir);
   function slideEls(els, dir) {
-    if (reduceMotion || !dir) return;
-    els.forEach((el, i) => {
+    if (motionPreference.matches || !dir) return;
+    els.forEach((el) => {
       el.animate(
-        [{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: "none" }],
-        { duration: 380, delay: Math.min(i, 10) * 18, easing: "cubic-bezier(.22,.8,.24,1)", fill: "backwards" }
+        [{ transform: `translateX(${dir * 10}px)` }, { transform: "none" }],
+        { duration: 320, easing: "cubic-bezier(.22,.8,.24,1)" }
       );
     });
   }
@@ -972,7 +1014,7 @@
     const total = rw.length || 1;
     const pct = Math.round((c[MASTERED] / total) * 100);
     const R = 48, L = 2 * Math.PI * R;
-    const startOffset = oldBar ? oldBar.style.strokeDashoffset || L : L;
+    const startOffset = oldBar ? getComputedStyle(oldBar).strokeDashoffset || L : L;
     const h = new Date().getHours();
     const greet = h < 5 ? "夜更かしの<br>ひと勉強" : h < 11 ? "おはよう。<br>朝の1セット" : h < 17 ? "すきま時間に<br>コツコツと" : "今日の仕上げに<br>もう一歩";
     const weak = WORDS.filter((w) => isWeak(w.word)).length;
@@ -995,11 +1037,11 @@
         <div class="hero-stats">
           <div class="hero-subj"><span class="subj-dot"></span><span class="hero-range">${esc(SUBJ.name)} ・ ${esc(rangeLabel())}</span></div>
           <div class="hero-greet">${greet}</div>
-          <div class="stat-row">
+        </div>
+        <div class="stat-row">
             <span class="stat"><span class="dot c-mastered"></span>覚えた <b>${num("m", c[MASTERED])}</b></span>
             <span class="stat"><span class="dot c-learning"></span>学習中 <b>${num("l", c[LEARNING])}</b></span>
             <span class="stat"><span class="dot c-new"></span>未学習 <b>${num("n", c[NEW])}</b></span>
-          </div>
         </div>
       </section>
 
@@ -1033,12 +1075,12 @@
       applyFrom(box, prev);
       stagger(box);
       countUp(box);
-      slideIn(box, dir);
+      slideEls([$(".hero-stats", box)], dir);
     }
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      const bar = $(".ring .bar", box);
-      if (bar) bar.style.strokeDashoffset = String(L * (1 - c[MASTERED] / total));
-    }));
+    const bar = $(".ring .bar", box);
+    const setRing = () => { bar.style.strokeDashoffset = String(L * (1 - c[MASTERED] / total)); };
+    if (motionPreference.matches) setRing();
+    else requestAnimationFrame(() => requestAnimationFrame(setRing));
   }
 
   // ---------- 暗記カード ----------
@@ -1061,7 +1103,7 @@
   function buildDeck(words) {
     let ws = words || setupWords();
     if (store.settings.cardShuffle !== false) ws = shuffle(ws);
-    deck = { list: ws, i: 0, known: 0, unknown: 0, missed: [], hist: [], custom: !!words };
+    deck = { list: ws, i: 0, known: 0, unknown: 0, missed: [], hist: [], custom: !!words, lastAnswerAt: -Infinity };
   }
 
   VIEWS.cards = (params = {}) => {
@@ -1178,6 +1220,7 @@
 
   // ----- めくる画面 -----
   function renderCardStudy() {
+    window.scrollTo(0, 0);
     const total = deck.list.length;
     const head = `
       <div class="study-bar">
@@ -1209,7 +1252,7 @@
           </div>
         </div>`;
       bindCardStudy();
-      if (!deck.unknown) setTimeout(() => burst($(".badge-ico", view), 18), 250);
+      if (!deck.unknown) burst($(".badge-ico", view), 18);
       return;
     }
 
@@ -1261,17 +1304,20 @@
   function flipCard() {
     const flip = $("#flip");
     if (!flip || flip.dataset.busy) return;
-    flip.dataset.busy = "1";
-    // 表と裏は最初から両方描画しておき、半分回ったところで見える面を入れ替えるだけにする
-    // （途中で DOM を作り直すとガラスの再描画が走り、めくりがもたつく）
     const [front, back] = $$(".face", flip);
     const toBack = !flip.dataset.back;
-    const a = flip.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: 110, easing: "cubic-bezier(.4,0,.9,.6)", fill: "forwards" });
-    a.onfinish = () => {
+    const swapFaces = () => {
       front.classList.remove("in", "next");
       front.classList.toggle("is-hidden", toBack);
       back.classList.toggle("is-hidden", !toBack);
       if (toBack) flip.dataset.back = "1"; else delete flip.dataset.back;
+    };
+    if (motionPreference.matches) return swapFaces();
+    flip.dataset.busy = "1";
+    const a = flip.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: 110, easing: "cubic-bezier(.4,0,.9,.6)", fill: "forwards" });
+    a.onfinish = () => {
+      if (!flip.isConnected || flip.inert) return;
+      swapFaces();
       const b = flip.animate(
         [{ transform: "scaleX(0)" }, { transform: "scaleX(1.03)", offset: 0.7 }, { transform: "scaleX(1)" }],
         { duration: 300, easing: "cubic-bezier(.15,.8,.3,1)" }
@@ -1282,56 +1328,53 @@
   }
 
   // 次のカード（opacity をほぼ 0 にして下に置いておく）。ガラスの描画を先に済ませておくため
-  const flipHtml = (w, cls, enter = "") => `<div class="flip ${cls}"${cls ? "" : ' id="flip"'}>${cardFace(w, false, enter)}${cardFace(w, true)}</div>`;
+  const flipHtml = (w, cls, enter = "") => `<div class="flip ${cls}"${cls ? " inert" : ' id="flip"'}>${cardFace(w, false, enter)}${cardFace(w, true)}</div>`;
 
   function preloadNext() {
     const scene = $(".flip-scene", view);
+    if (!scene || !deck || $(".flip.queued", scene)) return;
     const next = deck.list[deck.i + 1];
-    if (!scene || !next || $(".flip.queued", scene)) return;
+    if (!next) return;
     scene.insertAdjacentHTML("afterbegin", flipHtml(next, "queued"));
   }
 
   // 同じボタンの素早い2度押し（ダブルタップ）で2枚まとめて判定しないように、直後の押下は無視する
-  let lastAnswerAt = 0;
   function answerCard(known, btn) {
     const flip = $("#flip");
     if (!flip) return;
     const now = performance.now();
-    if (now - lastAnswerAt < 200) return;
-    lastAnswerAt = now;
+    if (now - deck.lastAnswerAt < 200) return;
+    deck.lastAnswerAt = now;
     const w = deck.list[deck.i];
     const p = prog(w.word);
     // 「1枚戻る」で元に戻せるように、記録する前の状態をとっておく
-    const before = progMap()[w.word];
-    deck.hist.push({ i: deck.i, word: w.word, prev: before ? Object.assign({}, before) : null, logLen: store.log.length, known });
+    const prev = progMap()[w.word];
+    const evicted = store.log.length === MAX_LOG ? store.log[0] : null;
+    let entry;
     if (known) {
-      logAnswer(w.word, true, "c", { s: MASTERED, ok: (p.ok || 0) + 1 });
+      entry = logAnswer(w.word, true, "c", { s: MASTERED, ok: (p.ok || 0) + 1 });
       deck.known++;
       burst(btn, 10);
     } else {
-      logAnswer(w.word, false, "c", { s: LEARNING, ng: (p.ng || 0) + 1, streak: 0 });
+      entry = logAnswer(w.word, false, "c", { s: LEARNING, ng: (p.ng || 0) + 1, streak: 0 });
       deck.unknown++;
       deck.missed.push(w);
     }
 
-    // 1) 今のカードを判定の方向へスッと飛ばす（覚えた → 右 / まだ → 左）
+    deck.hist.push({ i: deck.i, word: w.word, prev, known, entry, evicted, firstRetained: store.log[0] });
+    deck.i++;
+    if (deck.i === deck.list.length) return renderCardStudy();
+
     flip.removeAttribute("id");
     flip.classList.add("leaving");
-    const dir = known ? 1 : -1;
-    const out = flip.animate(
-      [
+    flip.inert = true;
+    flip.getAnimations().forEach(animation => animation.cancel());
+    if (!motionPreference.matches) {
+      const dir = known ? 1 : -1;
+      flip.animate([
         { transform: "translateX(0) rotate(0deg)", opacity: 1 },
-        { transform: `translateX(${dir * 70}%) rotate(${dir * 7}deg)`, opacity: 1, offset: 0.55 },
-        { transform: `translateX(${dir * 125}%) rotate(${dir * 12}deg)`, opacity: 0 },
-      ],
-      { duration: 300, easing: "cubic-bezier(.2,.75,.35,1)", fill: "forwards" }
-    );
-    out.onfinish = () => flip.remove();
-
-    deck.i++;
-    if (deck.i >= deck.list.length) {
-      setTimeout(() => current === "cards" && cardOpts.stage === "study" && renderCardStudy(), 240);
-      return;
+        { transform: `translateX(${dir * 110}%) rotate(${dir * 9}deg)`, opacity: 0 },
+      ], { duration: 270, easing: "cubic-bezier(.24,.72,.34,1)" }).onfinish = () => flip.remove();
     }
 
     // 2) 用意しておいた次のカードを同じ瞬間に前へ出す
@@ -1339,9 +1382,11 @@
     if (next) {
       next.classList.remove("queued");
       next.id = "flip";
+      next.inert = false;
     } else {
       flip.insertAdjacentHTML("beforebegin", flipHtml(deck.list[deck.i], "", "next"));
     }
+    if (motionPreference.matches) flip.remove();
     badgeEl.textContent = `${deck.i + 1} / ${deck.list.length}`;
     const bar = $(".progress-line i", view);
     if (bar) bar.style.width = `${(deck.i / deck.list.length) * 100}%`;
@@ -1357,18 +1402,27 @@
 
   // 1枚戻る：直前の判定を取り消して、そのカードをもう一度出す
   function undoCard() {
-    const h = deck && deck.hist.pop();
+    const h = deck?.hist.at(-1);
     if (!h) return;
-    if (h.prev) progMap()[h.word] = h.prev;
+    const index = store.log.lastIndexOf(h.entry);
+    const newerAnswer = store.log.slice(index + 1).some(e => e.s === SID && e.w === h.word);
+    if (index < 0 || newerAnswer || statusOf(h.word) !== (h.known ? MASTERED : LEARNING)) {
+      return toast("その後に学習記録が変わったため、この判定は取り消せません");
+    }
+    deck.hist.pop();
+    const star = !!prog(h.word).star;
+    if (h.prev || star) progMap()[h.word] = { ...h.prev, star };
     else delete progMap()[h.word];
-    if (store.log.length === h.logLen + 1) store.log.pop();
+    store.log.splice(index, 1);
+    if (h.evicted && h.firstRetained === store.log[0]) store.log.unshift(h.evicted);
     save();
+    deck.lastAnswerAt = -Infinity;
     deck.i = h.i;
     if (h.known) deck.known--;
     else { deck.unknown--; deck.missed.pop(); }
     renderCardStudy();
     const face = $("#flip .face", view);
-    if (face && !reduceMotion) face.animate([{ transform: `translateX(${h.known ? 40 : -40}%) rotate(${h.known ? 6 : -6}deg)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 380, easing: "cubic-bezier(.2,.8,.3,1)" });
+    if (face && !motionPreference.matches) face.animate([{ transform: `translateX(${h.known ? 40 : -40}%) rotate(${h.known ? 6 : -6}deg)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 380, easing: "cubic-bezier(.2,.8,.3,1)" });
   }
 
   function toggleCheck(word) {
@@ -1410,12 +1464,17 @@
 
   // パソコンのキーボードでも：スペースでめくる、→ 覚えた、← まだ、Backspace で1枚戻る
   document.addEventListener("keydown", (e) => {
-    if (current !== "cards" || cardOpts.stage !== "study" || !deck || sheetOpen() || isOpen()) return;
-    if (e.target.closest && e.target.closest("input, textarea, select")) return;
-    if (e.key === " " || e.key === "Enter") { e.preventDefault(); flipCard(); }
-    else if (e.key === "ArrowRight") answerCard(true, $("[data-ans='1']", view));
-    else if (e.key === "ArrowLeft") answerCard(false, $("[data-ans='0']", view));
-    else if (e.key === "Backspace") { e.preventDefault(); undoCard(); }
+    if (current !== "cards" || cardOpts.stage !== "study" || !deck || sheetOpen() || isOpen() || subjMenuOpen()) return;
+    if (e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.isComposing || e.target.closest?.("input, textarea, select, [contenteditable=true]")) return;
+    if (e.key === " " || e.key === "Enter") {
+      if (e.target.closest?.("button, a, [role=button]")) return;
+      e.preventDefault();
+      flipCard();
+    } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const known = e.key === "ArrowRight";
+      answerCard(known, $(`[data-ans='${known ? 1 : 0}']`, view));
+    } else if (e.key === "Backspace") { e.preventDefault(); undoCard(); }
   });
 
   // ---------- クイズ ----------
@@ -1430,6 +1489,7 @@
   function renderQuizSetup() {
     const st = store.settings;
     const pool = rangeWords();
+    const hasAlternatives = WORDS.some(w => w.meaning.trim() !== WORDS[0].meaning.trim());
     view.innerHTML = `
       <div class="section-title" style="margin-top:4px">出題範囲</div>
       ${unitStrip()}
@@ -1439,7 +1499,8 @@
       <div class="section-title">形式</div>
       <div class="seg">${[["mix", "ミックス"], ["w2m", "語 → 意味"], ["m2w", "意味 → 語"]].map(([v, l]) => `<button class="chip glass press ${st.quizMode === v ? "on" : ""}" data-mode="${v}"><span>${l}</span></button>`).join("")}</div>
       <div style="height:26px"></div>
-      <button class="btn primary block press" data-act="start" ${pool.length < 2 ? "disabled" : ""}><span>スタート（${Math.min(st.quizCount, pool.length)}問）</span></button>
+      <button class="btn primary block press" data-act="start" ${!pool.length || !hasAlternatives ? "disabled" : ""}><span>スタート（${Math.min(st.quizCount, pool.length)}問）</span></button>
+      ${hasAlternatives ? "" : '<p class="count-note">クイズには意味の異なる語が2つ以上必要です。</p>'}
       <div class="btn-row"><button class="btn glass press" data-act="weak"><span>${icon("flag")}苦手から出題</span></button></div>`;
     initStrips();
 
@@ -1449,7 +1510,7 @@
       const note = $(".count-note", view);
       note.textContent = `${rangeLabel()} ・ ${p.length}語`;
       const start = $("[data-act=start]", view);
-      start.disabled = p.length < 2;
+      start.disabled = !p.length || !hasAlternatives;
       $("span", start).textContent = `スタート（${Math.min(st.quizCount, p.length)}問）`;
       slideEls([note], dir);
     };
@@ -1474,19 +1535,34 @@
 
   function makeQuestion(w) {
     const mode = store.settings.quizMode === "mix" ? (Math.random() < 0.5 ? "w2m" : "m2w") : store.settings.quizMode;
-    const same = shuffle(WORDS.filter((x) => x.word !== w.word && x.category === w.category));
-    const other = shuffle(WORDS.filter((x) => x.word !== w.word && x.category !== w.category));
-    const distract = [...same, ...other].slice(0, 3);
-    return { w, mode, options: shuffle([w, ...distract]), answered: null };
+    const pool = WORDS.filter(x => x.meaning.trim() !== w.meaning.trim());
+    const same = shuffle(pool.filter(x => x.category === w.category));
+    const other = shuffle(pool.filter(x => x.category !== w.category));
+    const options = [w];
+    const labels = new Set();
+    for (const item of [...same, ...other]) {
+      const label = (mode === "w2m" ? item.meaning : item.word).trim();
+      if (labels.has(label)) continue;
+      labels.add(label);
+      options.push(item);
+      if (options.length === 4) break;
+    }
+    return { w, mode, options: shuffle(options), answered: null };
   }
 
   function startQuiz(words) {
     if (!words.length) return toast("出題できる語がありません");
-    quiz = { qs: words.map(makeQuestion), i: 0, score: 0, combo: 0, best: 0, missed: [] };
+    const qs = words.map(makeQuestion);
+    if (qs[0].options.length < 2) {
+      renderQuizSetup();
+      return toast("クイズには意味の異なる語が2つ以上必要です");
+    }
+    quiz = { qs, i: 0, score: 0, combo: 0, best: 0, missed: [] };
     renderQuestion();
   }
 
-  function renderQuestion() {
+  function renderQuestion(previousTap) {
+    window.scrollTo(0, 0);
     if (quiz.i >= quiz.qs.length) return renderQuizResult();
     const q = quiz.qs[quiz.i];
     badgeEl.textContent = `Q ${quiz.i + 1} / ${quiz.qs.length}`;
@@ -1503,14 +1579,20 @@
         ${q.options.map((o, i) => `<button class="opt glass press ${isW2M ? "" : "serif"}" data-opt="${i}"><span class="no">${i + 1}</span><span>${esc(isW2M ? o.meaning : o.word)}</span></button>`).join("")}
       </div>
       <div id="fb"></div>`;
-    stagger(view, 80, 50);
+    stagger(view);
     // 「次へ」を素早く2回押したとき、2回目が次の問題の選択肢に当たって勝手に答えないようにする
-    const shownAt = performance.now();
 
     view.onclick = (e) => {
       const b = e.target.closest("[data-opt]");
-      if (b && q.answered === null && performance.now() - shownAt > 350) return answerQuiz(Number(b.dataset.opt));
-      if (e.target.closest("[data-act=next]")) { quiz.i++; renderQuestion(); }
+      if (b && q.answered === null) {
+        const repeatedTap = previousTap && e.detail > 0 && e.timeStamp - previousTap.timeStamp < 320 &&
+          Math.hypot(e.clientX - previousTap.x, e.clientY - previousTap.y) < 16;
+        if (!repeatedTap) answerQuiz(Number(b.dataset.opt));
+      }
+      if (e.target.closest("[data-act=next]")) {
+        quiz.i++;
+        renderQuestion(e.detail ? { timeStamp: e.timeStamp, x: e.clientX, y: e.clientY } : null);
+      }
     };
   }
 
@@ -1548,7 +1630,7 @@
       </div>
       <div style="height:12px"></div>
       <button class="btn primary block press" data-act="next"><span>${last ? "結果を見る" : "次へ"}</span></button>`;
-    $("#fb").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    $("#fb").scrollIntoView({ behavior: motionPreference.matches ? "auto" : "smooth", block: "nearest" });
   }
 
   function renderQuizResult() {
@@ -1568,7 +1650,7 @@
       </div>
       ${quiz.missed.length ? `<div class="section-title">間違えた語</div><div class="word-list" id="missList">${quiz.missed.map(wordRow).join("")}</div>` : ""}`;
     countUp();
-    if (r >= 0.8) setTimeout(() => burst($(".badge-ico", view), 22), 250);
+    if (r >= 0.8) burst($(".badge-ico", view), 22);
     view.onclick = (e) => {
       const act = e.target.closest("[data-act]");
       if (!act) return;
@@ -1734,11 +1816,11 @@
         ? `<div class="glass log-card">${recent.map((e) => {
             const s = subjectById(e.s);
             const open = e.s === SID && BY_WORD.has(e.w);
-            return `<div class="log-row ${e.ok ? "ok" : "ng"} ${open ? "press" : ""}" ${open ? `data-word="${esc(e.w)}" role="button" tabindex="0"` : ""}>
+            return `<${open ? "button" : "div"} class="log-row ${e.ok ? "ok" : "ng"} ${open ? "press" : ""}" ${open ? `data-word="${esc(e.w)}"` : ""}>
               <span class="log-mark">${icon(e.ok ? "check" : "x")}</span>
               <div class="grow"><div class="log-w">${esc(e.w)}</div><div class="log-sub">${!sid && s ? `${esc(s.name)} ・ ` : ""}${e.m === "q" ? "クイズ" : "カード"} ・ ${e.ok ? "正解" : "不正解"}</div></div>
               <span class="log-t">${esc(relTime(e.t))}</span>
-            </div>`;
+            </${open ? "button" : "div"}>`;
           }).join("")}</div>`
         : emptyCard("chart", "まだ記録がありません", "暗記カードや4択クイズで解くと、ここに履歴と正答率がたまっていきます。")}`;
 
@@ -1755,11 +1837,63 @@
       const col = e.target.closest(".bar-col");
       if (col) return pick(col);
       const s = e.target.closest("[data-subject]");
-      if (s) { recOpts.scope = "subject"; return switchSubject(s.dataset.subject, e.clientX, e.clientY); }
+      if (s) {
+        recOpts.scope = "subject";
+        if (s.dataset.subject === SID) return go("records");
+        return switchSubject(s.dataset.subject, e.clientX, e.clientY);
+      }
       const row = e.target.closest("[data-word]");
-      if (row) openWordSheet(row.dataset.word);
+      if (row) openWordSheet(row);
     };
   };
+
+  // 起動時の更新と設定からの更新を一つの要求にまとめる。
+  let questionUpdate = null;
+  function showUpdateState() {
+    if (current !== "settings") return;
+    $$("[data-act=refresh], [data-act=save], #tokenIn", view).forEach(el => { el.disabled = !!questionUpdate; });
+    const message = $("#dataMsg", view);
+    if (message && questionUpdate) { message.hidden = false; message.textContent = "読み込み中…"; }
+  }
+
+  async function refreshQuestions(token, manual = false) {
+    if (questionUpdate) return;
+    const controller = new AbortController();
+    questionUpdate = controller;
+    showUpdateState();
+    try {
+      const changed = await DATA.refresh(token, controller.signal);
+      if (controller.signal.aborted) return;
+      const tokenSaved = !token || DATA.setToken(token);
+      if (changed) {
+        if (OPEN_WHEN_EMPTY.includes(current) && !view.inert && !dockDrag && !body.classList.contains("dragging")) {
+          applyNewData();
+          go(token && current === "settings" ? "home" : current);
+          if (manual) toast("問題を読み込みました");
+        } else {
+          pendingData = true;
+          toast("新しい問題を取得しました。ホームに戻ると反映されます");
+        }
+      } else if (manual) {
+        if (current === "settings") rerender();
+        toast("最新です");
+      }
+      if (!tokenSaved) toast("問題は保存しました。トークンは端末に保存できませんでした");
+    } catch (error) {
+      if (!controller.signal.aborted && (manual || current === "settings")) {
+        const message = $("#dataMsg", view);
+        if (message) { message.hidden = false; message.textContent = error.message; }
+        else toast(error.message);
+      }
+    } finally {
+      if (questionUpdate === controller) {
+        questionUpdate = null;
+        showUpdateState();
+        const message = $("#dataMsg", view);
+        if (message?.textContent === "読み込み中…") message.hidden = true;
+      }
+    }
+  }
 
   // ---------- 設定 ----------
   VIEWS.settings = () => {
@@ -1781,7 +1915,7 @@
              </label>
              <button class="btn press primary block" data-act="save" style="margin-top:10px"><span>保存して読み込む</span></button>
              <p style="margin-top:12px">トークンの作り方：GitHub の <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token の作成画面</a> で、Repository access を「Only select repositories → ${esc(DATA.repo.split("/")[1])}」、Permissions の Contents を「Read-only」にして作成します。トークンはこの端末の中にだけ保存されます。</p>`}
-        <p id="dataMsg" style="margin:10px 0 0" hidden></p>
+        <p id="dataMsg" role="status" style="margin:10px 0 0" hidden></p>
       </div>
       ${WORDS.length ? `<div class="glass setting">
         <h3>${icon("book")}${esc(SUBJ.name)}の収録データ</h3>
@@ -1803,41 +1937,27 @@
           <button class="btn glass press tint-bad" data-act="reset-all"><span>すべて</span></button>
         </div>
       </div>`;
-    const msg = (text) => {
-      const m = $("#dataMsg");
-      if (!m) return text && toast(text); // 読み込み中にほかの画面へ移っていたらトーストで知らせる
-      m.textContent = text;
-      m.hidden = !text;
-    };
-    const load = (token) => {
-      // 先にキーボードを閉じる（開いたまま画面を差し替えると、iOS で上のバーがずれる）
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      msg("読み込み中…");
-      return DATA.refresh(token).then(
-        (changed) => {
-          if (token) DATA.setToken(token);
-          const here = current === "settings"; // 読み込み中にほかの画面へ移っていたら、画面は動かさない
-          if (changed) {
-            if (here) { applyNewData(); go(token ? "home" : "settings"); }
-            else pendingData = true;
-            toast(here ? "問題を読み込みました" : "新しい問題を取得しました。ホームに戻ると反映されます");
-          } else { toast("最新です"); if (here) rerender(); }
-        },
-        (err) => msg(err.message),
-      );
-    };
+    showUpdateState();
     view.onclick = (e) => {
       const act = e.target.closest("[data-act]");
       if (!act) return;
       const a = act.dataset.act;
       if (a === "save") {
         const token = $("#tokenIn").value.trim();
-        if (!token) return msg("トークンを貼り付けてください。");
-        return load(token);
+        if (!token) {
+          const message = $("#dataMsg", view);
+          message.hidden = false;
+          message.textContent = "トークンを貼り付けてください。";
+          return $("#tokenIn").focus();
+        }
+        $("#tokenIn").blur();
+        return refreshQuestions(token, true);
       }
-      if (a === "refresh") return load();
+      if (a === "refresh") return refreshQuestions(undefined, true);
       if (a === "forget") {
         if (!confirm("この端末からトークンを削除しますか？（読み込み済みの問題と学習記録は残ります）")) return;
+        questionUpdate?.abort();
+        questionUpdate = null;
         DATA.clearToken();
         toast("トークンを削除しました");
         return rerender();
@@ -1866,16 +1986,33 @@
   const scrim = $("#scrim");
   const isOpen = () => body.classList.contains("drawer-open");
 
+  function syncOverlayAccess() {
+    const drawerOpen = isOpen();
+    const blocked = drawerOpen || sheetOpen() || subjMenuOpen();
+    view.inert = blocked;
+    dock.inert = blocked;
+    $("#topbar").inert = blocked;
+    drawer.inert = !drawerOpen;
+    sheetWrap.inert = !sheetOpen();
+    $("#subjMenu").inert = !subjMenuOpen();
+  }
+
   function openDrawer() {
     toggleDrawerSubj(false);
     closeSubjMenu();
     body.classList.add("drawer-open");
     drawer.setAttribute("aria-hidden", "false");
+    $("#menuBtn").setAttribute("aria-expanded", "true");
+    syncOverlayAccess();
+    $("#drawerNav .on")?.focus({ preventScroll: true });
     drawer.style.transform = "";
     scrim.style.opacity = "";
   }
   function closeDrawer() {
     body.classList.remove("drawer-open");
+    syncOverlayAccess();
+    $("#menuBtn").setAttribute("aria-expanded", "false");
+    $("#menuBtn").focus({ preventScroll: true });
     drawer.setAttribute("aria-hidden", "true");
     drawer.style.transform = "";
     scrim.style.opacity = "";
@@ -1906,21 +2043,27 @@
   const EDGE = 24; // iOS Safari の「戻る」スワイプが反応する左端の幅
   let g = null;
 
+  function clearDrawerDrag() {
+    g = null;
+    body.classList.remove("dragging");
+    drawer.style.transform = "";
+    scrim.style.opacity = "";
+    scrim.style.pointerEvents = "";
+  }
   document.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) { g = null; return; }
+    if (g) clearDrawerDrag();
+    if (e.touches.length !== 1) {
+      release(false);
+      if (dockDrag) { skipDockClick = true; updateDock(); }
+      return;
+    }
+    if (sheetOpen() || subjMenuOpen() || e.target.closest("[data-noswipe], input, textarea, select")) return;
     const t = e.touches[0];
-    // ブラウザで開いているときだけ、左端から始まるタッチの既定動作（＝戻る）を止める。
-    // ホーム画面アプリには戻るスワイプが無いので止めない（止めると端の近くでスクロールやタップが効かなくなる）
-    const edge = !standalone && t.clientX < EDGE && !e.target.closest("input, [data-noswipe]");
-    if (edge) e.preventDefault();
-    const scroller = e.target.closest("[data-noswipe]");
-    g = {
-      x0: t.clientX, y0: t.clientY, x: t.clientX, t0: performance.now(),
-      edge, mode: null, open: isOpen(), scroller,
-      // 横にスクロールできる帯を、左へ戻せる位置から触ったか（そのときは帯のスクロールを優先する）
-      scrolled: !!scroller && scroller.scrollLeft > 1,
-      w: drawer.getBoundingClientRect().width + 24,
-    };
+    // 端からの戻るだけを抑止する。ボタンのタップや単元の横スクロールはネイティブに任せる。
+    const edge = !standalone && t.clientX < EDGE && !e.target.closest("button, a, [data-flip]");
+    if (edge && e.cancelable) e.preventDefault();
+    g = { x0: t.clientX, y0: t.clientY, x: t.clientX, t0: performance.now(),
+      edge, mode: null, open: isOpen(), w: drawer.offsetWidth + 24 };
   }, { passive: false });
 
   document.addEventListener("touchmove", (e) => {
@@ -1931,13 +2074,9 @@
     g.x = t.clientX;
 
     if (g.mode === null) {
-      // はっきり右向きの横スワイプだけ、方向が決まる前から既定動作を止める（縦スクロールを巻き込まないように）。
-      // 横にスクロールした帯の上では止めない（止めると帯を左へ戻せなくなる）
-      if (!g.open && !g.scrolled && dx >= 3 && dx > Math.abs(dy) * 2 && !sheetOpen()) e.preventDefault();
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       const horizontal = Math.abs(dx) > Math.abs(dy) * 1.15;
-      const scrollerAtStart = !g.scroller || (!g.scrolled && g.scroller.scrollLeft <= 1);
-      if (horizontal && ((!g.open && dx > 0 && scrollerAtStart) || (g.open && dx < 0)) && !sheetOpen()) {
+      if (horizontal && (g.open ? dx < 0 : dx > 0)) {
         g.mode = "drawer";
         body.classList.add("dragging");
       } else {
@@ -1946,7 +2085,7 @@
     }
 
     if (g.mode === "drawer") {
-      e.preventDefault();
+      if (e.cancelable) e.preventDefault();
       let p = g.open ? 1 + dx / g.w : dx / g.w;
       p = Math.max(0, Math.min(1, p));
       // 端まで引いたときのゴムのような抵抗
@@ -1955,7 +2094,7 @@
       scrim.style.opacity = String(p);
       scrim.style.pointerEvents = "none";
       g.p = p;
-    } else if (g.mode === "none" && g.edge && Math.abs(dx) > Math.abs(dy)) {
+    } else if (g.mode === "none" && g.edge && e.cancelable && Math.abs(dx) > Math.abs(dy)) {
       e.preventDefault();
     }
   }, { passive: false });
@@ -1983,14 +2122,8 @@
     }
   }, { passive: true });
 
-  document.addEventListener("touchcancel", () => {
-    if (g && g.mode === "drawer") {
-      body.classList.remove("dragging");
-      g.open ? openDrawer() : closeDrawer();
-    }
-    scrim.style.pointerEvents = "";
-    g = null;
-  });
+  document.addEventListener("touchcancel", clearDrawerDrag);
+  window.addEventListener("pagehide", clearDrawerDrag);
 
   // 履歴ガード：戻る操作が起きてもページを離れず、サイドバーの開閉に置き換える
   // ホーム画面アプリでは履歴が無ければスワイプで戻れないので、履歴を一切作らない
@@ -2000,11 +2133,14 @@
     if (standalone) return;
     if (!(history.state && history.state.kotaelogGuard)) history.pushState(GUARD, "");
   };
-  history.replaceState({ kotaelogBase: true }, "");
-  armGuard();
+  if (!standalone && !history.state?.kotaelogGuard) {
+    history.replaceState({ ...history.state, kotaelogBase: true }, "");
+    armGuard();
+  }
   window.addEventListener("popstate", () => {
     armGuard();
     if (sheetOpen()) closeSheet();
+    else if (subjMenuOpen()) closeSubjMenu();
     else if (isOpen()) closeDrawer();
     else openDrawer();
   });
@@ -2014,16 +2150,86 @@
   // デスクトップ用：Esc で閉じる
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (sheetOpen()) closeSheet();
+    if (subjMenuOpen()) closeSubjMenu();
+    else if (sheetOpen()) closeSheet();
     else if (isOpen()) closeDrawer();
   });
 
   // ---------- 起動 ----------
   const dock = $("#dock");
-  dock.innerHTML = NAV.filter(([name]) => OPEN_WHEN_EMPTY.includes(name))
-    .map(([name, title, symbol]) => `<button data-nav="${name}">${icon(symbol)}<span>${title}</span></button>`).join("");
+  dock.insertAdjacentHTML("beforeend", NAV.filter(([name]) => OPEN_WHEN_EMPTY.includes(name))
+    .map(([name, title, symbol]) => `<button data-nav="${name}">${icon(symbol)}<span>${title}</span></button>`).join(""));
+  const dockButtons = $$("button", dock);
+  const lensSurface = $(".dock-glass", dock);
+  dock.style.setProperty("--slots", dockButtons.length);
+  let dockDrag = null;
+  let skipDockClick = false;
+  let lensAnimation;
+
+  function updateDock() {
+    const index = dockButtons.findIndex(button => button.dataset.nav === current);
+    const previous = dock.dataset.selected;
+    dock.hidden = current === "cards" || current === "quiz";
+    dockButtons.forEach((button, i) => {
+      if (i === index) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
+    dockDrag = null;
+    dock.classList.remove("scrubbing");
+    if (index < 0) {
+      delete dock.dataset.selected;
+      return;
+    }
+    dock.dataset.selected = current;
+    dock.style.setProperty("--slot", index);
+    if (previous && previous !== current && !motionPreference.matches) {
+      lensAnimation?.cancel();
+      lensAnimation = lensSurface.animate([
+        { scale: "1" }, { scale: "1.09 .94", offset: .32 },
+        { scale: ".98 1.02", offset: .72 }, { scale: "1" },
+      ], { duration: 440, easing: "ease-out" });
+    }
+  }
+
+  // タップはネイティブの click に任せる。横に引いたときだけレンズを指に追従させる。
+  dock.addEventListener("pointerdown", event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const tab = event.target.closest("button");
+    if (!tab) return;
+    const first = dockButtons[0].getBoundingClientRect();
+    dockDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: first.left, width: first.width };
+    skipDockClick = false;
+    tab.setPointerCapture(event.pointerId);
+  });
+  const dockSlot = x => Math.max(0, Math.min(dockButtons.length - 1, (x - dockDrag.left) / dockDrag.width - 0.5));
+  dock.addEventListener("pointermove", event => {
+    if (dockDrag?.id !== event.pointerId) return;
+    const dx = Math.abs(event.clientX - dockDrag.x);
+    const dy = Math.abs(event.clientY - dockDrag.y);
+    if (!dockDrag.moved) {
+      if (Math.max(dx, dy) < 6) return;
+      if (dy >= dx) { dockDrag = null; skipDockClick = true; return; }
+      dockDrag.moved = true;
+      dock.classList.add("scrubbing");
+    }
+    dock.style.setProperty("--slot", dockSlot(event.clientX));
+  });
+  function finishDockDrag(event) {
+    if (dockDrag?.id !== event.pointerId) return;
+    const { moved } = dockDrag;
+    const next = moved && event.type === "pointerup" ? dockButtons[Math.round(dockSlot(event.clientX))].dataset.nav : current;
+    dockDrag = null;
+    if (!moved) return;
+    skipDockClick = true;
+    if (next === current) updateDock();
+    else go(next);
+  }
+  dock.addEventListener("pointerup", finishDockDrag);
+  dock.addEventListener("pointercancel", finishDockDrag);
+  dock.addEventListener("lostpointercapture", finishDockDrag);
   dock.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-nav]");
+    if (skipDockClick && event.detail) return;
+    const button = event.target.closest("button");
     if (button && button.dataset.nav !== current) go(button.dataset.nav);
   });
   $("#drawerNav").innerHTML = NAV.map(([k, t, ic], i) => `<li style="--i:${i}"><button data-nav="${k}"><span class="ni">${icon(ic)}</span>${t}</button></li>`).join("");
@@ -2035,35 +2241,34 @@
     closeSubjMenu();
     switchSubject(b.dataset.subject, e.clientX, e.clientY);
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && subjMenuOpen()) closeSubjMenu(); });
+  $("#subjMenu").addEventListener("keydown", event => {
+    const options = $$(".subj-opt", event.currentTarget);
+    const index = options.indexOf(document.activeElement);
+    if (index < 0) return;
+    let next;
+    if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = options.length - 1;
+    else if (event.key === "ArrowDown") next = (index + 1) % options.length;
+    else if (event.key === "ArrowUp") next = (index + options.length - 1) % options.length;
+    else return;
+    event.preventDefault();
+    options[next].focus();
+  });
+  syncOverlayAccess();
   renderChrome();
 
   // 現代文単語アプリ時代の記録を引き継いだら、新しいキーに保存して古いキーは消す
   try {
-    if (localStorage.getItem(OLD_KEY) !== null) {
-      save();
+    if (localStorage.getItem(OLD_KEY) !== null && save()) {
       localStorage.removeItem(OLD_KEY);
     }
   } catch (_) {}
 
   go("home");
 
-  // 裏で最新の問題を取りに行く。変わっていたら、ホーム・記録・設定にいるときだけその場で反映する
-  // （学習の途中で画面が切り替わらないように。それ以外はホームに戻ったときに反映）
-  if (DATA.hasToken()) {
-    DATA.refresh().then((changed) => {
-      if (!changed) return;
-      if (OPEN_WHEN_EMPTY.includes(current) && !sheetOpen() && !isOpen()) {
-        applyNewData();
-        go(current);
-      } else {
-        pendingData = true;
-        toast("新しい問題を取得しました。ホームに戻ると反映されます");
-      }
-    }, () => { /* オフラインなどは保存済みの問題で続ける */ });
-  }
+  if (DATA.hasToken()) refreshQuestions();
 
-  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+  if ("serviceWorker" in navigator && window.isSecureContext) {
     window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
   }
 })();
