@@ -24,6 +24,8 @@
         meaning: String(w.meaning),
         example: w.example ? String(w.example) : "",
         category: w.category ? String(w.category) : "その他",
+        // どのテスト（定期考査）の問題か。書いていない問題は ""（テスト未設定）
+        test: typeof w.test === "string" ? w.test.trim() : "",
         synonyms: Array.isArray(w.synonyms) ? w.synonyms : [],
         antonyms: Array.isArray(w.antonyms) ? w.antonyms : [],
       }));
@@ -49,14 +51,34 @@
   ];
   const isHex = (c) => typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c);
   // 教科の一覧（新しい問題を取得したら作り直す）
+  // テストの並び：名前に数字があれば数字の順（第2回 → 第3回）、無ければ問題に出てきた順。最後がいちばん新しいテスト
+  const testNo = (t) => {
+    const m = /\d+/.exec(t.replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0)));
+    return m ? Number(m[0]) : null;
+  };
+  const sortTests = (names) => names
+    .map((t, i) => [t, i])
+    .sort(([a, i], [b, j]) => {
+      if (!a || !b) return a === b ? 0 : a ? 1 : -1; // テスト未設定は先頭（古い側）
+      const x = testNo(a), y = testNo(b);
+      return (x !== null && y !== null ? x - y : 0) || i - j;
+    })
+    .map(([t]) => t);
+
   let SUBJECTS = [];
   function loadSubjects() {
-    SUBJECTS = DATA.subjects().filter(s => s?.id != null).map((s, i) => ({
-      id: String(s.id),
-      name: String(s.name || s.id),
-      color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
-      words: normalize(s.items, s.name),
-    }));
+    SUBJECTS = DATA.subjects().filter(s => s?.id != null).map((s, i) => {
+      const all = normalize(s.items, s.name);
+      return {
+        id: String(s.id),
+        name: String(s.name || s.id),
+        color: Array.isArray(s.color) && s.color.length === 2 && s.color.every(isHex) ? s.color : FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+        all, // 全テストの問題
+        tests: sortTests([...new Set(all.map((w) => w.test))]),
+        test: "", // 学習するテスト（applyTests で決める）
+        words: all, // 学習するテストの問題
+      };
+    });
   }
   loadSubjects();
   const subjectById = (id) => SUBJECTS.find((s) => s.id === id) || null;
@@ -201,6 +223,44 @@
     return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
   }
 
+  // ---------- テストの選択 ----------
+  // 教科ごとに学習するテストを選ぶ（settings.tests[教科ID]）。選んでいなければ、問題がある中でいちばん新しいテスト
+  const ALL_TESTS = "*";
+  const hasTests = (s) => s.tests.some(Boolean);
+  const latestTest = (s) => s.tests.at(-1) ?? "";
+  function testOf(s) {
+    const t = store.settings.tests?.[s.id];
+    return t === ALL_TESTS || (typeof t === "string" && s.tests.includes(t)) ? t : latestTest(s);
+  }
+  function applyTests() {
+    SUBJECTS.forEach((s) => {
+      s.test = testOf(s);
+      s.words = s.test === ALL_TESTS || s.tests.length < 2 ? s.all : s.all.filter((w) => w.test === s.test);
+    });
+  }
+  const testName = (t) => (t === ALL_TESTS ? "すべてのテスト" : t || "テスト未設定");
+  // 画面に出すテスト名（テストを書いていない教科では出さない）
+  const testLabel = (s) => (s && hasTests(s) ? testName(s.test) : "");
+  function setTest(sid, t) {
+    const s = subjectById(sid);
+    if (!s) return;
+    const tests = Object.assign({}, store.settings.tests);
+    // いちばん新しいテストを選んだときは「おまかせ」に戻す（新しいテストの問題が増えたら自動で移る）
+    if (t === latestTest(s)) delete tests[sid];
+    else tests[sid] = t;
+    store.settings.tests = tests;
+    save();
+    applyTests();
+    if (sid === SID) {
+      useSubject(SID);
+      deck = null;
+      quiz = null;
+      cardOpts.stage = "setup";
+      listOpts.cat = "all";
+    }
+    renderChrome();
+  }
+
   // ---------- 教科の選択 ----------
   function useSubject(id) {
     SUBJ = subjectById(id) || SUBJECTS.find((s) => s.words.length) || SUBJECTS[0] || null;
@@ -215,6 +275,7 @@
       root.setProperty("--accent-2", SUBJ.color[1]);
     }
   }
+  applyTests();
   useSubject(store.settings.subject);
 
   // ---------- ユーティリティ ----------
@@ -597,11 +658,20 @@
   const starBtn = (word, on) =>
     `<button class="star ${on ? "on" : ""}" data-star="${esc(word)}" aria-label="チェック（苦手に入る）" aria-pressed="${on}">${icon("checkc")}</button>`;
 
+  // 一覧の左端：真ん中の球が今の状態（直近の判定）、上が正解の回数、下が不正解の回数
+  const tally = (p) => {
+    const ok = p.ok || 0, ng = p.ng || 0, s = p.s || 0;
+    const label = ok + ng ? `${STATUS_LABEL[s]}・正解${ok}回・不正解${ng}回` : STATUS_LABEL[s];
+    return `<span class="tally${ok + ng ? "" : " none"}" role="img" aria-label="${label}">
+      <b class="t-ok${ok ? "" : " zero"}">${ok}</b><i class="ball ${STATUS_CLASS[s]}"></i><b class="t-ng${ng ? "" : " zero"}">${ng}</b>
+    </span>`;
+  };
+
   const wordRow = (w) => {
     const p = prog(w.word);
     return `<div class="word-row glass">
       <button class="word-main press" data-word="${esc(w.word)}">
-        <span class="dot ${STATUS_CLASS[p.s || 0]}"></span>
+        ${tally(p)}
         <span class="grow">
           <span class="w">${w.no !== null ? `<span class="num">${esc(noLabel(w))}</span>` : ""}${esc(w.word)} <span class="r">${esc(w.reading)}</span></span>
           <span class="m">${esc(w.meaning)}</span>
@@ -909,6 +979,7 @@
   function applyNewData() {
     pendingData = false;
     loadSubjects();
+    applyTests();
     useSubject(store.settings.subject || SID);
     deck = null;
     quiz = null;
@@ -952,7 +1023,7 @@
     if (!SUBJ) return `<div class="page-heading"><h2>今日の学習</h2>${day}</div>`;
     // いま何の教科を学習しているかを、画面でいちばん大きな文字で出す
     return `<div class="page-heading subj-heading">
-      <div class="grow"><small>今日の学習</small><h2><span class="subj-dot"></span><span class="subj-name">${esc(SUBJ.name)}</span></h2></div>
+      <div class="grow"><small>${esc(testLabel(SUBJ) || "今日の学習")}</small><h2><span class="subj-dot"></span><span class="subj-name">${esc(SUBJ.name)}</span></h2></div>
       ${day}</div>`;
   }
 
@@ -1017,7 +1088,7 @@
     const box = $("#homeBody", view);
     if (!box) return;
     const prev = dir ? readCounts(box) : null;
-    const oldBar = dir ? $(".ring .bar", box) : null;
+    const oldBar = dir ? $(".ring .arc", box) : null;
     const rw = rangeWords();
     const c = counts(rw);
     const total = rw.length || 1;
@@ -1039,7 +1110,7 @@
           <svg viewBox="0 0 112 112">
             <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
             <circle class="track" cx="56" cy="56" r="${R}" fill="none" stroke-width="10"/>
-            <circle class="bar" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L}" style="stroke-dashoffset:${startOffset}"/>
+            <circle class="arc" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L} ${L * 2}" style="stroke-dashoffset:${startOffset}"/>
           </svg>
           <div class="ring-label"><div><b>${num("pct", pct)}<span style="font-size:15px">%</span></b><small>習得率</small></div></div>
         </div>`)}
@@ -1086,7 +1157,7 @@
       countUp(box);
       slideEls([$(".hero-stats", box)], dir);
     }
-    const bar = $(".ring .bar", box);
+    const bar = $(".ring .arc", box);
     const setRing = () => { bar.style.strokeDashoffset = String(L * (1 - c[MASTERED] / total)); };
     if (motionPreference.matches) setRing();
     else requestAnimationFrame(() => requestAnimationFrame(setRing));
@@ -1300,13 +1371,16 @@
         <div class="tap-hint">タップで意味を表示</div>`}
       </div>`;
     }
+    // 長い裏面は中の箱だけをスクロールする（カードごと動かすと、縁の光とチェックがずれて線が残る）
     return `<div class="face back glass press is-hidden" data-flip>
       ${tag}${cardCheck(w)}
-      <div class="back-word fit" style="${fitLen(w)}">${esc(w.word)}</div>
-      <div class="back-reading">${esc(w.reading)}</div>
-      <div class="back-meaning">${esc(w.meaning)}</div>
-      ${w.example ? `<div class="back-example">${esc(w.example)}</div>` : ""}
-      ${relHtml(w)}
+      <div class="back-scroll">
+        <div class="back-word fit" style="${fitLen(w)}">${esc(w.word)}</div>
+        <div class="back-reading">${esc(w.reading)}</div>
+        <div class="back-meaning">${esc(w.meaning)}</div>
+        ${w.example ? `<div class="back-example">${esc(w.example)}</div>` : ""}
+        ${relHtml(w)}
+      </div>
     </div>`;
   }
 
@@ -1695,7 +1769,7 @@
         if (q && String(w.no ?? "").toLowerCase() !== q.replace(/^no\.?\s*/, "") && !(w.word + w.reading + w.meaning + w.synonyms.join("") + w.antonyms.join("")).toLowerCase().includes(q)) return false;
         return true;
       });
-      $("#countNote").textContent = `${ws.length}語`;
+      $("#countNote").textContent = `${ws.length}語 ・ 球の上が正解、下が不正解の回数`;
       listEl.innerHTML = ws.length ? ws.map(wordRow).join("") : `<div class="empty">見つかりませんでした</div>`;
     };
     renderList();
@@ -1908,11 +1982,31 @@
   VIEWS.settings = () => {
     const at = DATA.fetchedAt();
     const atLabel = at ? new Date(at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    const tested = SUBJECTS.filter(hasTests);
+    const empty = SUBJECTS.filter((s) => !s.all.length);
+    const testChip = (s, t, n) => {
+      const on = s.test === t;
+      return `<button class="chip glass press ${on ? "on" : ""}" data-test-subj="${esc(s.id)}" data-test="${esc(t)}" aria-pressed="${on}"><span>${esc(testName(t))}<span class="chip-n">${n}</span></span></button>`;
+    };
     view.innerHTML = `
+      ${tested.length ? `<div class="glass setting">
+        <h3>${icon("calendar")}テスト</h3>
+        <p>教科ごとに、学習するテストを選びます。選んだテストの問題だけがホーム・カード・クイズ・一覧に出ます。ふだんは問題がある中でいちばん新しいテストになります。</p>
+        <div class="test-list">
+          ${tested.map((s) => `<div class="test-row" style="--accent:${s.color[0]};--accent-2:${s.color[1]}">
+            <div class="test-subj"><span class="subj-dot"></span>${esc(s.name)}</div>
+            <div class="test-chips">
+              ${s.tests.map((t) => testChip(s, t, s.all.filter((w) => w.test === t).length)).join("")}
+              ${s.tests.length > 1 ? testChip(s, ALL_TESTS, s.all.length) : ""}
+            </div>
+          </div>`).join("")}
+        </div>
+        ${empty.length ? `<p class="test-note">${empty.map((s) => esc(s.name)).join("・")}はまだ問題がありません。</p>` : ""}
+      </div>` : ""}
       <div class="glass setting">
         <h3>${icon("refresh")}問題データ</h3>
         <p>${DATA.hasData()
-          ? `${SUBJECTS.map((s) => `${esc(s.name)}（${s.words.length}）`).join(" / ")}<br>最終取得：${esc(atLabel)}`
+          ? `${SUBJECTS.map((s) => `${esc(s.name)}（${s.all.length}）`).join(" / ")}<br>最終取得：${esc(atLabel)}`
           : "まだ読み込んでいません。"}</p>
         ${DATA.hasToken()
           ? `<div class="btn-row">
@@ -1928,7 +2022,7 @@
       </div>
       ${WORDS.length ? `<div class="glass setting">
         <h3>${icon("book")}${esc(SUBJ.name)}の収録データ</h3>
-        <p>${WORDS.length}語 ・ ${CATEGORIES.length}単元<br>${CATEGORIES.map(esc).join(" / ")}</p>
+        <p>${testLabel(SUBJ) ? `${esc(testLabel(SUBJ))} ・ ` : ""}${WORDS.length}語 ・ ${CATEGORIES.length}単元<br>${CATEGORIES.map(esc).join(" / ")}</p>
       </div>` : ""}
       <div class="glass setting">
         <h3>${icon("layers")}問題の追加</h3>
@@ -1948,6 +2042,18 @@
       </div>`;
     showUpdateState();
     view.onclick = (e) => {
+      const chip = e.target.closest("[data-test]");
+      if (chip) {
+        const s = subjectById(chip.dataset.testSubj);
+        if (!s || s.test === chip.dataset.test) return;
+        setTest(s.id, chip.dataset.test);
+        updateDrawerSub();
+        const y = scroller.scrollTop;
+        rerender();
+        scroller.scrollTop = y;
+        $(`[data-test-subj="${CSS.escape(s.id)}"][data-test="${CSS.escape(chip.dataset.test)}"]`, view)?.focus({ preventScroll: true });
+        return toast(`${s.name}：${testName(s.test)}に切り替えました`);
+      }
       const act = e.target.closest("[data-act]");
       if (!act) return;
       const a = act.dataset.act;

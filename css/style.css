@@ -18,6 +18,9 @@
   --good: #14b88a;
   --bad: #ff4d6d;
   --warn: #ff9f1c;
+  /* 小さな数字用（明るい背景でも読める濃さ） */
+  --good-ink: #0a7d5c;
+  --bad-ink: #d0243f;
 
   /* ガラスは透かし気味にして、後ろの教科の色（.blob）が見えるようにする */
   --glass-bg: rgba(255, 255, 255, 0.4);
@@ -65,6 +68,8 @@
     --focus-ring: #b6d5ff;
     --good: #3ee0ad;
     --bad: #ff6b85;
+    --good-ink: #3ee0ad;
+    --bad-ink: #ff8098;
 
     --glass-bg: rgba(255, 255, 255, 0.09);
     --glass-bg-strong: rgba(255, 255, 255, 0.16);
@@ -356,7 +361,8 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 .ring { position: relative; width: 112px; height: 112px; flex: none; }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .ring .track { stroke: rgba(255, 255, 255, 0.35); }
-.ring .bar { stroke: url(#ringGrad); transition: stroke-dashoffset 1.2s var(--ease); }
+/* 習得率の弧。真上から時計回りに伸ばす（グラフの棒 .bar とは別の名前にして、棒の伸びる演出がかからないようにする） */
+.ring .arc { stroke: url(#ringGrad); transition: stroke-dashoffset 1.2s var(--ease); }
 .ring-label { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; line-height: 1.1; }
 .ring-label b { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .ring-label small { display: block; font-size: 11px; color: var(--ink-2); letter-spacing: 0.08em; }
@@ -444,6 +450,13 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 
 .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 
+/* 設定：教科ごとのテスト。選んだチップはその教科の色にする */
+.test-list { display: grid; gap: 12px; margin-top: 14px; }
+.test-row { --selection-bg: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.test-subj { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.test-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.test-note { margin: 12px 0 0; font-size: 12px; }
+
 /* ---------- 単語カード ---------- */
 .deck-meta { display: flex; justify-content: space-between; align-items: center; margin: 4px 4px 12px; font-size: 13px; color: var(--ink-2); }
 .progress-line { height: 4px; border-radius: 99px; background: rgba(255, 255, 255, 0.3); overflow: hidden; margin: 0 4px 16px; }
@@ -478,7 +491,18 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
   text-align: center;
   --radius: 34px;
 }
-.face.back { justify-content: flex-start; text-align: left; align-items: stretch; overflow-y: auto; }
+/* 上のラベルとチェックの下から、中身だけをスクロールする箱にする。上下の端はふわっと消す */
+.face.back { justify-content: flex-start; text-align: left; align-items: stretch; padding: 48px 0 0; }
+.face.back > .back-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 24px 28px;
+  -webkit-mask-image: linear-gradient(transparent 0, #000 14px, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(transparent 0, #000 14px, #000 calc(100% - 22px), transparent);
+}
+.face.back .back-word { margin-top: 0; }
 .face .tag {
   position: absolute;
   top: 18px;
@@ -633,7 +657,7 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 .search input::placeholder { color: var(--ink-3); }
 .search svg { position: relative; z-index: 2; flex: none; opacity: 0.6; }
 
-.word-list { display: grid; gap: 8px; }
+.word-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .word-row {
   width: 100%;
   display: flex;
@@ -662,6 +686,28 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 .word-row .r { font-size: 12px; color: var(--ink-2); }
 .word-row .m { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .word-row .grow { flex: 1; min-width: 0; }
+/* 左端の成績：上が正解の回数、真ん中の球が今の状態、下が不正解の回数 */
+.tally {
+  flex: none;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-width: 22px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.tally .t-ok { color: var(--good-ink); }
+.tally .t-ng { color: var(--bad-ink); }
+.tally .zero { color: var(--ink-3); font-weight: 500; }
+.tally.none b { visibility: hidden; }
+.tally .ball {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: inset 0 -2px 3px rgba(0, 0, 0, 0.18), inset 0 1.5px 2px rgba(255, 255, 255, 0.55);
+}
 .star { flex: none; width: 44px; height: 44px; display: grid; place-items: center; font-size: 19px; color: var(--ink-3); border-radius: 50%; transition: transform 0.4s var(--spring); }
 .star.on { color: #ffb400; text-shadow: 0 0 12px rgba(255, 180, 0, 0.6); }
 .star:active { transform: scale(0.8); }
@@ -1115,7 +1161,7 @@ body.dragging .drawer-nav li, body.dragging .drawer-subj { animation: none; }
 .bars-max span { position: absolute; left: 0; top: -16px; font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .bar-col { position: relative; height: 100%; display: flex; align-items: flex-end; justify-content: center; border-radius: 6px 6px 0 0; transition: background 0.25s; }
 .bar-col.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.bar {
+.bar-col > .bar {
   display: block;
   width: 64%;
   max-width: 16px;

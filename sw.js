@@ -1,9 +1,9 @@
 // 初回のインストールでオフライン起動に必要な一式を保存する。
 const scope = self.registration.scope;
 const prefix = `kotaelog:${scope}:`;
-const cacheName = prefix + "25";
+const cacheName = prefix + "26";
 const shell = [
-  "index.html", "css/style.css?v=24", "js/data.js?v=3", "js/app.js?v=25",
+  "index.html", "css/style.css?v=25", "js/data.js?v=3", "js/app.js?v=26",
   "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png",
 ].map(path => new URL(path, scope).href);
 const index = shell[0];
