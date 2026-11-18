@@ -475,11 +475,18 @@
     if (!WORDS.length && !OPEN_WHEN_EMPTY.includes(name)) name = "home";
     if (name !== "cards" || !params.setup) dropEmptyUnitSel();
     current = name;
+    view.dataset.page = name;
     closeSheet();
     closeSubjMenu();
     setTitle(TITLES[name] || "");
     badgeEl.textContent = "";
     $$("#drawerNav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
+    const dock = $("#dock");
+    dock.hidden = name === "cards" || name === "quiz";
+    $$("button", dock).forEach((button) => {
+      if (button.dataset.nav === name) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
     enterAnim();
     window.scrollTo(0, 0);
     VIEWS[name](params);
@@ -893,6 +900,32 @@
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resyncViewport(); });
 
   // ---------- ホーム ----------
+  function homeHeading() {
+    const date = new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric", weekday: "short" }).format(new Date());
+    return `<div class="page-heading"><h2>今日の学習</h2><span>${icon("calendar")}${esc(date)}</span></div>`;
+  }
+
+  function glassDeck(front) {
+    return `<div class="glass-deck" ${front ? "" : 'aria-hidden="true"'}>
+      <div class="deck-leaf rear"></div><div class="deck-leaf middle"></div>
+      <div class="deck-leaf front">${front || '<span class="deck-glyph">答</span>'}</div></div>`;
+  }
+
+  function homeMetrics(sm, streak = sm.streak) {
+    const metric = (ico, label, key, value, unit) => `<div class="kpi glass">
+      ${icon(ico)}<small>${label}</small>
+      <b>${value === null ? "–" : `<span data-k="${key}" data-count="${value}">${value}</span><em>${unit}</em>`}</b></div>`;
+    return `<div class="kpis stagger">
+      ${metric("calendar", "今日の解答", "tn", sm.tn, "問")}
+      ${metric("flame", "連続学習", "streak", streak, "日")}
+      ${metric("target", "正答率", "rate", sm.n ? rate(sm.ok, sm.n) : null, "%")}
+    </div>`;
+  }
+
+  function recordLink() {
+    return `<button class="link-row glass press" data-go="records"><span class="tile-ico sm">${icon("chart")}</span><span class="grow"><b>記録を見る</b><small>解答の履歴・正答率・連続学習</small></span>${icon("chevR", "chev")}</button>`;
+  }
+
   VIEWS.home = () => {
     view.onclick = (e) => {
       if (unitStripClick(e, renderHomeBody)) return;
@@ -903,9 +936,18 @@
     };
 
     if (!DATA.hasData() || !SUBJECTS.length) {
-      view.innerHTML = emptyCard("key", "問題データを読み込みましょう",
-        `問題は非公開のリポジトリ <code>${esc(DATA.repo)}</code> にあります。設定画面で読み取り用のトークンを入力すると、この端末に問題が読み込まれます（端末ごとに最初の1回だけ）。`,
-        `<button class="btn press primary block" data-go="settings"><span>設定を開く</span></button>`);
+      view.innerHTML = `${homeHeading()}
+        <section class="hero glass cover welcome">
+          <div class="cover-copy">
+            <h3 class="hero-greet">一問一答を、<br>はじめよう。</h3>
+            <p>問題データを接続すると、暗記カードと<br class="wide-break">クイズで学習を始められます。</p>
+            <button class="btn press cover-action" data-go="settings"><span>問題データを接続 ${icon("chevR")}</span></button>
+          </div>
+          ${glassDeck()}
+        </section>
+        <div class="section-title">学習の記録</div>
+        ${homeMetrics(summary())}
+        ${recordLink()}`;
       return;
     }
     if (!WORDS.length) {
@@ -914,7 +956,7 @@
       return;
     }
 
-    view.innerHTML = `${unitStrip()}<div class="tab-body" id="homeBody"></div>`;
+    view.innerHTML = `${homeHeading()}${unitStrip()}<div class="tab-body" id="homeBody"></div>`;
     initStrips();
     renderHomeBody(0);
   };
@@ -941,15 +983,15 @@
     const num = (k, v) => `<span data-k="${k}" data-count="${v}">${v}</span>`;
 
     box.innerHTML = `
-      <section class="hero glass">
-        <div class="ring">
+      <section class="hero glass cover">
+        ${glassDeck(`<div class="ring">
           <svg viewBox="0 0 112 112">
             <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs>
             <circle class="track" cx="56" cy="56" r="${R}" fill="none" stroke-width="10"/>
             <circle class="bar" cx="56" cy="56" r="${R}" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L}" style="stroke-dashoffset:${startOffset}"/>
           </svg>
           <div class="ring-label"><div><b>${num("pct", pct)}<span style="font-size:15px">%</span></b><small>習得率</small></div></div>
-        </div>
+        </div>`)}
         <div class="hero-stats">
           <div class="hero-subj"><span class="subj-dot"></span><span class="hero-range">${esc(SUBJ.name)} ・ ${esc(rangeLabel())}</span></div>
           <div class="hero-greet">${greet}</div>
@@ -961,11 +1003,7 @@
         </div>
       </section>
 
-      <div class="kpis stagger">
-        <div class="kpi glass">${icon("calendar")}<b>${num("tn", sm.tn)}<em>問</em></b><small>今日の解答</small></div>
-        <div class="kpi glass">${icon("flame")}<b>${num("streak", streak)}<em>日</em></b><small>連続学習</small></div>
-        <div class="kpi glass">${icon("target")}<b>${sm.n ? `${num("rate", rate(sm.ok, sm.n))}<em>%</em>` : "–"}</b><small>正答率</small></div>
-      </div>
+      ${homeMetrics(sm, streak)}
 
       <div class="section-title">学習する</div>
       <div class="tiles stagger">
@@ -974,7 +1012,7 @@
         ${tile("list", "list", "一覧", `${WORDS.length}語を検索`)}
         ${tile("weak", "flag", "苦手", `${weak}語を復習`)}
       </div>
-      <button class="link-row glass press" data-go="records"><span class="tile-ico sm">${icon("chart")}</span><span class="grow"><b>記録を見る</b><small>解答の履歴・正答率・連続学習</small></span>${icon("chevR", "chev")}</button>
+      ${recordLink()}
 
       <div class="section-title">単元別</div>
       <div class="cat-list stagger">
@@ -1739,7 +1777,7 @@
                <button class="btn glass press" data-act="forget"><span>トークンを削除</span></button>
              </div>`
           : `<label class="search glass">
-               <input id="tokenIn" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+               <input aria-label="GitHub 読み取り用トークン" id="tokenIn" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
              </label>
              <button class="btn press primary block" data-act="save" style="margin-top:10px"><span>保存して読み込む</span></button>
              <p style="margin-top:12px">トークンの作り方：GitHub の <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token の作成画面</a> で、Repository access を「Only select repositories → ${esc(DATA.repo.split("/")[1])}」、Permissions の Contents を「Read-only」にして作成します。トークンはこの端末の中にだけ保存されます。</p>`}
@@ -1981,6 +2019,13 @@
   });
 
   // ---------- 起動 ----------
+  const dock = $("#dock");
+  dock.innerHTML = NAV.filter(([name]) => OPEN_WHEN_EMPTY.includes(name))
+    .map(([name, title, symbol]) => `<button data-nav="${name}">${icon(symbol)}<span>${title}</span></button>`).join("");
+  dock.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-nav]");
+    if (button && button.dataset.nav !== current) go(button.dataset.nav);
+  });
   $("#drawerNav").innerHTML = NAV.map(([k, t, ic], i) => `<li style="--i:${i}"><button data-nav="${k}"><span class="ni">${icon(ic)}</span>${t}</button></li>`).join("");
   $("#subjPill").addEventListener("click", (e) => { e.stopPropagation(); subjMenuOpen() ? closeSubjMenu() : openSubjMenu(); });
   $("#menuScrim").addEventListener("click", closeSubjMenu);

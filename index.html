@@ -2,10 +2,10 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>コタエログ</title>
   <meta name="description" content="現代国語・英語・生物・化学・地理・歴史の一問一答を、カード・クイズで覚えて記録する学習アプリ。">
-  <meta name="theme-color" content="#1b1f3b">
+  <meta name="theme-color" content="#171d38">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,21 +16,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=20">
+  <link rel="stylesheet" href="css/style.css?v=21">
 </head>
 <body>
   <!-- 背景（ガラス越しに透ける色の層） -->
-  <div class="backdrop" aria-hidden="true">
-    <span class="blob b1"></span>
-    <span class="blob b2"></span>
-    <span class="blob b3"></span>
-    <span class="blob b4"></span>
-  </div>
+  <div class="backdrop" aria-hidden="true"></div>
 
   <header class="topbar glass" id="topbar">
     <button class="icon-btn" id="menuBtn" aria-label="メニューを開く">
       <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 7h16M4 12h11M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
     </button>
+    <span class="wordmark"><span class="brand-mark" aria-hidden="true">答</span>コタエログ</span>
     <h1 class="topbar-title" id="viewTitle">ホーム</h1>
     <span class="topbar-badge" id="topBadge"></span>
     <button class="subj-pill" id="subjPill" aria-label="教科を切り替える" aria-haspopup="menu" aria-expanded="false" hidden>
@@ -44,6 +40,8 @@
   <div class="subj-menu glass" id="subjMenu" role="menu" aria-label="教科"></div>
 
   <main id="view" class="view"></main>
+
+  <nav id="dock" class="dock glass" aria-label="主要画面"></nav>
 
   <!-- サイドバー -->
   <div class="scrim" id="scrim"></div>
@@ -76,6 +74,6 @@
   <div class="toast glass" id="toast"></div>
 
   <script src="js/data.js?v=2"></script>
-  <script src="js/app.js?v=21"></script>
+  <script src="js/app.js?v=22"></script>
 </body>
 </html>
