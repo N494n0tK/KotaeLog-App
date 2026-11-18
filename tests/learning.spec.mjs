@@ -25,6 +25,13 @@ async function openHome(page, historySize = 0, url = "/") {
   await expect(page.locator(".hero-range")).toContainText("現代国語");
 }
 
+// サイドバーを開いて画面を切り替える
+async function nav(page, name) {
+  await page.locator("#menuBtn").tap();
+  await page.locator(`#drawerNav [data-nav="${name}"]`).tap();
+  await expect(page.locator("#view")).toHaveAttribute("data-page", name);
+}
+
 test.afterEach(async ({ page }) => {
   expect((await page.pageErrors()).map(error => error.message)).toEqual([]);
 });
@@ -35,37 +42,13 @@ test("初回ホームから接続設定と空の記録を開ける", async ({ pa
   await page.getByRole("button", { name: "問題データを接続" }).tap();
   await page.getByRole("button", { name: "保存して読み込む" }).tap();
   await expect(page.locator("#dataMsg")).toHaveText("トークンを貼り付けてください。");
-  await page.locator('#dock [data-nav="records"]').tap();
+  await nav(page, "records");
   await expect(page.locator(".result")).toContainText("まだ記録がありません");
-});
-
-test("細い画面でドックが折り返さず、連打後も選択レンズと画面が一致する", async ({ page }) => {
-  await openHome(page);
-  for (const width of [320, 375, 430, 1024]) {
-    await page.setViewportSize({ width, height: 720 });
-    for (const name of ["settings", "home", "records"]) {
-      await page.locator(`#dock [data-nav="${name}"]`).dispatchEvent("click");
-    }
-    await expect(page.locator("#view")).toHaveAttribute("data-page", "records");
-    await expect(page.locator("#dock [aria-current=page]")).toHaveAttribute("data-nav", "records");
-    const buttons = await page.locator("#dock button").evaluateAll(tabs => tabs.map(tab => {
-      const range = document.createRange();
-      range.selectNodeContents(tab.querySelector("span"));
-      const rect = tab.getBoundingClientRect();
-      return range.getClientRects().length === 1 && rect.height >= 44 && rect.left >= 0 && rect.right <= innerWidth;
-    }));
-    expect(buttons).toEqual([true, true, true]);
-    await expect.poll(() => page.locator("#dock").evaluate(dock => {
-      const lens = dock.querySelector(".dock-lens").getBoundingClientRect();
-      const selected = dock.querySelector("[aria-current]").getBoundingClientRect();
-      return Math.max(Math.abs(lens.left - selected.left), Math.abs(lens.right - selected.right));
-    })).toBeLessThan(1);
-  }
 });
 
 test("全教科の記録から現在の教科を選び直せる", async ({ page }) => {
   await openHome(page);
-  await page.locator('#dock [data-nav="records"]').tap();
+  await nav(page, "records");
   await page.locator('[data-scope="all"]').tap();
   await page.locator('#view [data-subject="jp"]').tap();
   await expect(page.locator('[data-scope="subject"]')).toHaveAttribute("aria-selected", "true");
@@ -123,30 +106,6 @@ test("動きを減らす設定ではカードをすぐ裏返せる", async ({ pa
     return { back: flip.dataset.back, animations: flip.getAnimations().length };
   });
   expect(result).toEqual({ back: "1", animations: 0 });
-});
-
-test("ドックのドラッグは指を離した場所で確定し、中断すると元に戻る", async ({ page }) => {
-  await openHome(page);
-  const home = await page.locator('#dock [data-nav="home"]').boundingBox();
-  const settings = await page.locator('#dock [data-nav="settings"]').boundingBox();
-  const y = home.y + home.height / 2;
-  await page.mouse.move(home.x + home.width / 2, y);
-  await page.mouse.down();
-  await page.mouse.move(settings.x + settings.width / 2, y, { steps: 8 });
-  await expect(page.locator("#dock")).toHaveClass(/scrubbing/);
-  await expect(page.locator("#view")).toHaveAttribute("data-page", "home");
-  await page.mouse.up();
-  await expect(page.locator("#view")).toHaveAttribute("data-page", "settings");
-  await page.mouse.down();
-  await page.mouse.move(home.x + home.width / 2, y, { steps: 6 });
-  await page.locator("#dock button").evaluateAll(buttons => {
-    const owner = buttons.find(button => button.hasPointerCapture(1));
-    if (owner) owner.releasePointerCapture(1);
-  });
-  await page.mouse.move(home.x + 3, y);
-  await page.mouse.up();
-  await expect(page.locator("#dock")).not.toHaveClass(/scrubbing/);
-  await expect(page.locator("#dock [aria-current]")).toHaveAttribute("data-nav", "settings");
 });
 
 test("横スクロールや途中で中断したスワイプでドロワーが残らない", async ({ page }) => {
@@ -224,11 +183,11 @@ test("読み込み中に画面を離れても学習を中断せず、更新は�
       await route.fulfill({ json: { subjects: [{ id: "jp", name: "新しい国語", file: "jp.json" }] } });
     } else await route.fulfill({ json: { items } });
   });
-  await page.locator('#dock [data-nav="settings"]').tap();
+  await nav(page, "settings");
   await page.locator("#tokenIn").fill("local-test-only");
   await page.locator('[data-act="save"]').evaluate(button => { button.click(); button.click(); });
   await expect(page.locator('[data-act="save"]')).toBeDisabled();
-  await page.locator('#dock [data-nav="home"]').tap();
+  await nav(page, "home");
   await page.locator('[data-go="cards"]').tap();
   await page.locator('[data-act="start"]').tap();
   releaseIndex();
@@ -256,7 +215,7 @@ test("問題を保存できないときは元のデータを保ち、同じ設�
       return write.call(this, key, value);
     };
   });
-  await page.locator('#dock [data-nav="settings"]').tap();
+  await nav(page, "settings");
   await page.locator("#tokenIn").fill("local-test-only");
   await page.locator('[data-act="save"]').tap();
   await expect(page.locator("#dataMsg")).toContainText("保存できません");
@@ -304,7 +263,7 @@ test.describe("オフライン起動", () => {
       const response = await page.goto(origin + "/?offline");
       expect(response.fromServiceWorker()).toBe(true);
       await expect(page.locator(".hero-range")).toContainText("現代国語");
-      await page.locator('#dock [data-nav="records"]').tap();
+      await nav(page, "records");
       await expect(page.locator(".chart-head")).toContainText("直近14日");
     } finally {
       if (!server.killed) server.kill();

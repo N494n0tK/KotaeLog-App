@@ -7,7 +7,7 @@
 @property --accent-2 { syntax: "<color>"; inherits: true; initial-value: #b14cff; }
 
 :root {
-  --bg: #f2f4fa;
+  --bg: #e9ecf8;
   --ink: #141a33;
   --ink-2: rgba(20, 26, 51, 0.68);
   --ink-3: rgba(20, 26, 51, 0.65);
@@ -19,21 +19,25 @@
   --bad: #ff4d6d;
   --warn: #ff9f1c;
 
-  --glass-bg: rgba(255, 255, 255, 0.64);
-  --glass-bg-strong: rgba(249, 250, 255, 0.89);
+  /* ガラスは透かし気味にして、後ろの教科の色（.blob）が見えるようにする */
+  --glass-bg: rgba(255, 255, 255, 0.4);
+  --glass-bg-strong: rgba(255, 255, 255, 0.62);
   --glass-rim: rgba(255, 255, 255, 0.75);
   --glass-hi: rgba(255, 255, 255, 0.95);
-  --glass-shadow: 0 12px 32px -20px #555e9873, 0 1px 3px #4f58851a;
+  --glass-shadow: 0 18px 40px -18px rgba(30, 36, 90, 0.45), 0 2px 6px -2px rgba(30, 36, 90, 0.12);
   --glass-blur: 22px;
-  --selection-bg: linear-gradient(150deg, #ffffffcf, #ffffff24 46%, #b4dcf354), color-mix(in srgb, var(--accent) 19%, #e7effbc9);
-  --selection-ink: #182b4a;
-  --selection-rim: #ffffffdb;
-  --selection-edge: #5875a980;
-  --dock-base: rgba(231, 237, 248, .91);
-  --lens-light: #fffe;
-  --lens-aqua: #a7e1f0ac;
-  --dock-ink: #36445d;
+  /* 選んでいるタブ・ボタンは教科の色で塗る */
+  --selection-bg: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --selection-ink: #fff;
+  --selection-rim: rgba(255, 255, 255, 0.45);
+  --selection-edge: rgba(255, 255, 255, 0.12);
   --focus-ring: #294893;
+
+  /* 背景に浮かぶ色の玉（教科の色から作る） */
+  --blob-1: color-mix(in oklab, var(--accent) 62%, white);
+  --blob-2: color-mix(in oklab, var(--accent-2) 55%, #ff8fb8);
+  --blob-3: #5ee0d0;
+  --blob-4: #ffd27a;
 
   --radius: 26px;
   --gutter: 16px;
@@ -58,24 +62,20 @@
     --ink-2: rgba(243, 245, 255, 0.72);
     --ink-3: #b3bdd2;
     --rule: rgba(255, 255, 255, 0.14);
-    --selection-bg: linear-gradient(145deg, #ffffff26, #ffffff05 48%, #91e0ec2b), color-mix(in srgb, var(--accent) 20%, #455875bd);
-    --selection-ink: #fbfcff;
-    --selection-rim: #cadbffb8;
-    --selection-edge: #a3c9e175;
-    --dock-base: rgba(25, 34, 54, .91);
-    --lens-light: #e3eaff66;
-    --lens-aqua: #78cbdc66;
-    --dock-ink: #dde5f5;
     --focus-ring: #b6d5ff;
     --good: #3ee0ad;
     --bad: #ff6b85;
 
-    --glass-bg: rgba(42, 47, 73, 0.66);
-    --glass-bg-strong: rgba(34, 39, 60, 0.93);
+    --glass-bg: rgba(255, 255, 255, 0.09);
+    --glass-bg-strong: rgba(255, 255, 255, 0.16);
     --glass-rim: rgba(255, 255, 255, 0.28);
     --glass-hi: rgba(255, 255, 255, 0.55);
     --glass-shadow: 0 18px 44px -16px rgba(0, 0, 0, 0.7), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
 
+    --blob-1: color-mix(in oklab, var(--accent) 82%, black);
+    --blob-2: color-mix(in oklab, var(--accent-2) 60%, #c2368f);
+    --blob-3: #0aa5a0;
+    --blob-4: #c77a12;
   }
 }
 
@@ -122,7 +122,7 @@ body {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y;
-  scroll-padding-block: calc(var(--safe-t) + var(--top-h) + 20px) calc(var(--over) + var(--safe-b) + 78px);
+  scroll-padding-block: calc(var(--safe-t) + var(--top-h) + 20px) calc(var(--over) + var(--safe-b) + 20px);
 }
 body.drawer-open .scroller, body.menu-open .scroller, body:has(.sheet-wrap.open) .scroller { overflow-y: hidden; }
 
@@ -140,12 +140,23 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
   z-index: 0;
   pointer-events: none;
 }
-.backdrop {
-  background:
-    radial-gradient(ellipse at 83% 7%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 44%),
-    radial-gradient(ellipse at 4% 63%, #86d8d72b, transparent 40%),
-    radial-gradient(ellipse at 76% 85%, #aebafe38, transparent 45%);
+/* 教科の色の玉がゆっくり漂う。教科を切り替えると色も移り変わる */
+.blob {
+  position: absolute;
+  width: 70vmax;
+  height: 70vmax;
+  border-radius: 50%;
+  opacity: 0.85;
+  will-change: transform;
 }
+.b1 { background: radial-gradient(circle at center, var(--blob-1) 0%, transparent 62%); top: -25vmax; left: -25vmax; animation: drift1 22s ease-in-out infinite alternate; }
+.b2 { background: radial-gradient(circle at center, var(--blob-2) 0%, transparent 62%); top: 10vh; right: -35vmax; animation: drift2 26s ease-in-out infinite alternate; }
+.b3 { background: radial-gradient(circle at center, var(--blob-3) 0%, transparent 62%); bottom: -35vmax; left: -15vmax; animation: drift3 30s ease-in-out infinite alternate; }
+.b4 { background: radial-gradient(circle at center, var(--blob-4) 0%, transparent 60%); bottom: -20vmax; right: -30vmax; opacity: 0.6; animation: drift1 34s ease-in-out infinite alternate-reverse; }
+
+@keyframes drift1 { to { transform: translate(18vw, 22vh) scale(1.15); } }
+@keyframes drift2 { to { transform: translate(-22vw, 18vh) scale(0.9); } }
+@keyframes drift3 { to { transform: translate(20vw, -18vh) scale(1.1); } }
 
 /* ---------- Liquid Glass ---------- */
 .glass {
@@ -428,7 +439,7 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 .chip.on, .unit-glider, .seg-ctl button.on, .status-seg button.on {
   background: var(--selection-bg);
   color: var(--selection-ink);
-  box-shadow: inset 0 1px 1px var(--selection-rim), inset 0 0 0 1px var(--selection-edge), 0 3px 8px #182c501a;
+  box-shadow: inset 0 1px 1px var(--selection-rim), inset 0 0 0 1px var(--selection-edge), 0 8px 18px -10px var(--accent);
 }
 
 .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -1430,9 +1441,6 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
 .kpis .kpi small { font-size: 12px; font-weight: 700; }
 .section-title { font-size: 16px; letter-spacing: .04em; color: var(--ink); }
 .section-title::before { width: 4px; height: 16px; }
-.tile[data-go="quiz"] { --c1: #346875; --c2: #62a9a5; }
-.tile[data-go="list"] { --c1: #3d6999; --c2: #85a5c7; }
-.tile[data-go="weak"] { --c1: #915433; --c2: #cd936e; }
 .search:focus-within, :where(button, a):focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 @media (min-width: 740px) {
   .view { padding-top: calc(var(--safe-t) + var(--top-h) + 44px); }
@@ -1469,85 +1477,45 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
   .cover-action { font-size: 13px; padding-inline: 12px; }
 }
 
-.dock {
-  --lip: 5px;
-  --slots: 3;
-  --slot: 0;
-  --radius: 999px;
-  position: fixed;
-  z-index: 18;
-  bottom: calc(var(--safe-b) + 10px);
-  inset-inline: 0;
-  margin-inline: auto;
-  width: min(21rem, calc(100% - 2 * var(--gutter)));
-  display: grid;
-  grid-template-columns: repeat(var(--slots), minmax(0, 1fr));
-  padding: var(--lip);
-  touch-action: pan-y;
-  background: linear-gradient(160deg, #ffffff23, transparent 43%, #b0cfff19), var(--dock-base);
-  box-shadow: inset 0 1px 1px var(--selection-rim), inset 0 -1px 1px var(--selection-edge),
-    0 3px 6px #15264221, 0 12px 30px -7px #111c3e55;
-}
-.dock[hidden] { display: none; }
-.dock-lens {
-  position: absolute;
-  inset-block: var(--lip);
-  left: var(--lip);
-  width: calc((100% - 2 * var(--lip)) / var(--slots));
-  border-radius: inherit;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(calc(var(--slot) * 100%));
-  transition: transform .46s cubic-bezier(.22, 1.13, .31, 1), opacity .16s;
-}
-.dock[data-selected] .dock-lens, .dock.scrubbing .dock-lens { opacity: 1; }
-.dock.scrubbing .dock-lens { transition: opacity .12s; }
-.dock-glass, .dock-glass::after {
-  position: absolute;
-  pointer-events: none;
-}
-.dock-glass {
-  inset: 0;
-  border-radius: inherit;
-  background:
-    radial-gradient(ellipse at 82% -72%, var(--lens-light) 12%, transparent 68%),
-    radial-gradient(ellipse at 11% 158%, var(--lens-aqua) 16%, transparent 62%),
-    var(--selection-bg);
-  box-shadow: inset 0 1px 1px var(--selection-rim), inset 0 -1px 2px var(--selection-edge),
-    inset 0 0 0 1px var(--selection-edge), 0 2px 5px #18264226;
-  transition: transform .26s var(--spring);
-}
-.dock-glass::after {
-  content: "";
-  inset: 1px 18% auto;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #f0fbff, transparent);
-}
-.dock.scrubbing .dock-glass { transform: scale(1.045, .95); }
-.dock button {
-  position: relative;
-  z-index: 2;
-  min-height: 46px;
+/* ============================================================
+   教科がひと目でわかるように：教科の色を画面全体に使う
+   ============================================================ */
+/* ホームの見出しは教科名を大きく（教科の色のグラデーション） */
+.subj-heading { align-items: flex-end; }
+.subj-heading .grow { min-width: 0; }
+.subj-heading small { display: block; font-size: 12px; font-weight: 700; letter-spacing: .14em; color: var(--ink-2); margin-bottom: 2px; }
+.subj-heading h2 { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.subj-heading h2 .subj-dot { width: 14px; height: 14px; box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 24%, transparent); }
+.subj-name {
   min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 4px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  line-height: 1.3;
-  font-weight: 700;
+  overflow: hidden;
   white-space: nowrap;
-  color: var(--dock-ink);
+  text-overflow: ellipsis;
+  padding-block: .08em;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
-.dock button[aria-current] { color: var(--selection-ink); }
-.dock button[aria-current] .ico { stroke-width: 2.35; }
-.dock .ico { width: 18px; height: 18px; }
-.dock button:active .ico { transform: scale(.92); }
-.dock button:focus-visible { outline: 2px solid currentColor; outline-offset: -4px; }
-.view:not([data-page="cards"]):not([data-page="quiz"]) { padding-bottom: calc(var(--over) + var(--safe-b) + 96px); }
-.toast { bottom: calc(var(--safe-b) + 78px); }
+.subj-heading > span { flex: none; padding-bottom: 8px; }
+@media (prefers-color-scheme: dark) {
+  .subj-name { background-image: linear-gradient(120deg, color-mix(in oklab, var(--accent) 55%, white), color-mix(in oklab, var(--accent-2) 60%, white)); }
+}
+
+/* 左上の「答」も教科の色にする（どの画面でも今の教科がわかる） */
+.brand-mark {
+  background: linear-gradient(145deg, var(--accent), var(--accent-2));
+  box-shadow: inset 0 1px 2px #fff9, 0 4px 12px -4px var(--accent);
+}
+
+/* 表紙のカードを教科の色で塗る */
+.cover {
+  background:
+    radial-gradient(ellipse at 95% 115%, color-mix(in oklab, var(--accent-2) 55%, white) 0%, color-mix(in oklab, var(--accent-2) 70%, transparent) 16%, transparent 46%),
+    radial-gradient(ellipse at 74% 0%, color-mix(in oklab, var(--accent) 60%, white), transparent 52%),
+    linear-gradient(115deg, color-mix(in oklab, var(--accent) 45%, #0c1230) 6%, color-mix(in oklab, var(--accent) 80%, #151a3d) 52%, color-mix(in oklab, var(--accent-2) 80%, #2a2f5a));
+  box-shadow: inset 0 1px 2px #ffffff80, 0 20px 38px -22px var(--accent);
+}
 
 /* 光と奥のカードだけを動かし、数値と本文は読める位置に保つ。 */
 @media (prefers-reduced-motion: no-preference) {
@@ -1559,18 +1527,11 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .press.is-pressed { scale: none; translate: none; }
-  .dock.scrubbing .dock-glass, .dock button:active .ico { transform: none; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 @media (prefers-reduced-transparency: reduce) {
   .glass { --glass-bg: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .dock { background: var(--bg); }
 }
 @media (prefers-contrast: more) {
-  .dock button, .kpi small { color: var(--ink); }
-  .dock-glass { border: 2px solid var(--selection-ink); }
-}
-@media (forced-colors: active) {
-  .dock { border: 1px solid ButtonText; }
-  .dock button[aria-current] { outline: 2px solid Highlight; outline-offset: -3px; }
+  .kpi small { color: var(--ink); }
 }

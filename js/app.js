@@ -498,7 +498,6 @@
     setTitle(TITLES[name] || "");
     badgeEl.textContent = "";
     $$("#drawerNav button").forEach((b) => b.classList.toggle("on", b.dataset.nav === name));
-    updateDock();
     release(false);
     enterAnim();
     scroller.scrollTop = 0;
@@ -949,7 +948,12 @@
   // ---------- ホーム ----------
   function homeHeading() {
     const date = new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric", weekday: "short" }).format(new Date());
-    return `<div class="page-heading"><h2>今日の学習</h2><span>${icon("calendar")}${esc(date)}</span></div>`;
+    const day = `<span>${icon("calendar")}${esc(date)}</span>`;
+    if (!SUBJ) return `<div class="page-heading"><h2>今日の学習</h2>${day}</div>`;
+    // いま何の教科を学習しているかを、画面でいちばん大きな文字で出す
+    return `<div class="page-heading subj-heading">
+      <div class="grow"><small>今日の学習</small><h2><span class="subj-dot"></span><span class="subj-name">${esc(SUBJ.name)}</span></h2></div>
+      ${day}</div>`;
   }
 
   function glassDeck(front) {
@@ -1871,7 +1875,7 @@
       if (controller.signal.aborted) return;
       const tokenSaved = !token || DATA.setToken(token);
       if (changed) {
-        if (OPEN_WHEN_EMPTY.includes(current) && !view.inert && !dockDrag && !body.classList.contains("dragging")) {
+        if (OPEN_WHEN_EMPTY.includes(current) && !view.inert && !body.classList.contains("dragging")) {
           applyNewData();
           go(token && current === "settings" ? "home" : current);
           if (manual) toast("問題を読み込みました");
@@ -1995,7 +1999,6 @@
     const drawerOpen = isOpen();
     const blocked = drawerOpen || sheetOpen() || subjMenuOpen();
     view.inert = blocked;
-    dock.inert = blocked;
     $("#topbar").inert = blocked;
     drawer.inert = !drawerOpen;
     sheetWrap.inert = !sheetOpen();
@@ -2059,7 +2062,6 @@
     if (g) clearDrawerDrag();
     if (e.touches.length !== 1) {
       release(false);
-      if (dockDrag) { skipDockClick = true; updateDock(); }
       return;
     }
     if (sheetOpen() || subjMenuOpen() || e.target.closest("[data-noswipe], input, textarea, select")) return;
@@ -2161,82 +2163,6 @@
   });
 
   // ---------- 起動 ----------
-  const dock = $("#dock");
-  dock.insertAdjacentHTML("beforeend", NAV.filter(([name]) => OPEN_WHEN_EMPTY.includes(name))
-    .map(([name, title, symbol]) => `<button data-nav="${name}">${icon(symbol)}<span>${title}</span></button>`).join(""));
-  const dockButtons = $$("button", dock);
-  const lensSurface = $(".dock-glass", dock);
-  dock.style.setProperty("--slots", dockButtons.length);
-  let dockDrag = null;
-  let skipDockClick = false;
-  let lensAnimation;
-
-  function updateDock() {
-    const index = dockButtons.findIndex(button => button.dataset.nav === current);
-    const previous = dock.dataset.selected;
-    dock.hidden = current === "cards" || current === "quiz";
-    dockButtons.forEach((button, i) => {
-      if (i === index) button.setAttribute("aria-current", "page");
-      else button.removeAttribute("aria-current");
-    });
-    dockDrag = null;
-    dock.classList.remove("scrubbing");
-    if (index < 0) {
-      delete dock.dataset.selected;
-      return;
-    }
-    dock.dataset.selected = current;
-    dock.style.setProperty("--slot", index);
-    if (previous && previous !== current && !motionPreference.matches) {
-      lensAnimation?.cancel();
-      lensAnimation = lensSurface.animate([
-        { scale: "1" }, { scale: "1.09 .94", offset: .32 },
-        { scale: ".98 1.02", offset: .72 }, { scale: "1" },
-      ], { duration: 440, easing: "ease-out" });
-    }
-  }
-
-  // タップはネイティブの click に任せる。横に引いたときだけレンズを指に追従させる。
-  dock.addEventListener("pointerdown", event => {
-    if (!event.isPrimary || event.button !== 0) return;
-    const tab = event.target.closest("button");
-    if (!tab) return;
-    const first = dockButtons[0].getBoundingClientRect();
-    dockDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: first.left, width: first.width };
-    skipDockClick = false;
-    tab.setPointerCapture(event.pointerId);
-  });
-  const dockSlot = x => Math.max(0, Math.min(dockButtons.length - 1, (x - dockDrag.left) / dockDrag.width - 0.5));
-  dock.addEventListener("pointermove", event => {
-    if (dockDrag?.id !== event.pointerId) return;
-    const dx = Math.abs(event.clientX - dockDrag.x);
-    const dy = Math.abs(event.clientY - dockDrag.y);
-    if (!dockDrag.moved) {
-      if (Math.max(dx, dy) < 6) return;
-      if (dy >= dx) { dockDrag = null; skipDockClick = true; return; }
-      dockDrag.moved = true;
-      dock.classList.add("scrubbing");
-    }
-    dock.style.setProperty("--slot", dockSlot(event.clientX));
-  });
-  function finishDockDrag(event) {
-    if (dockDrag?.id !== event.pointerId) return;
-    const { moved } = dockDrag;
-    const next = moved && event.type === "pointerup" ? dockButtons[Math.round(dockSlot(event.clientX))].dataset.nav : current;
-    dockDrag = null;
-    if (!moved) return;
-    skipDockClick = true;
-    if (next === current) updateDock();
-    else go(next);
-  }
-  dock.addEventListener("pointerup", finishDockDrag);
-  dock.addEventListener("pointercancel", finishDockDrag);
-  dock.addEventListener("lostpointercapture", finishDockDrag);
-  dock.addEventListener("click", (event) => {
-    if (skipDockClick && event.detail) return;
-    const button = event.target.closest("button");
-    if (button && button.dataset.nav !== current) go(button.dataset.nav);
-  });
   $("#drawerNav").innerHTML = NAV.map(([k, t, ic], i) => `<li style="--i:${i}"><button data-nav="${k}"><span class="ni">${icon(ic)}</span>${t}</button></li>`).join("");
   $("#subjPill").addEventListener("click", (e) => { e.stopPropagation(); subjMenuOpen() ? closeSubjMenu() : openSubjMenu(); });
   $("#menuScrim").addEventListener("click", closeSubjMenu);
