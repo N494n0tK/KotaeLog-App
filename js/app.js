@@ -236,6 +236,7 @@
   };
 
   const view = $("#view");
+  const scroller = $("#scroller"); // 中身をスクロールする箱（ページ全体はスクロールしない）
   const titleEl = $("#viewTitle");
   const badgeEl = $("#topBadge");
 
@@ -500,7 +501,7 @@
     updateDock();
     release(false);
     enterAnim();
-    window.scrollTo(0, 0);
+    scroller.scrollTop = 0;
     VIEWS[name](params);
     stagger();
     countUp();
@@ -918,15 +919,19 @@
   }
 
   // ---------- iOS：固定表示のずれを直す ----------
-  // キーボードを閉じたあとや、アプリに戻ってきたときに、上のバーなど position: fixed の要素が
-  // キーボードの高さぶんずれたまま残ることがある。1px だけスクロールして戻し、位置を合わせ直させる
-  function resyncViewport() {
-    setTimeout(() => {
-      const y = window.scrollY;
-      window.scrollTo(0, y + 1);
-      window.scrollTo(0, y);
-    }, 80);
+  // 中身は #scroller の中だけでスクロールするので、ページ全体（window）は常に一番上にあるはず。
+  // キーボードを閉じたあとなどに iOS がページ全体をずらしたまま残すと、上のバーやドックがずれて見えるので、
+  // 入力中でなければ一番上に戻す（キーボードが閉じきるまで少し待って、もう一度確かめる）
+  const typing = () => !!document.activeElement?.matches?.("input, textarea, select");
+  function resetWindowScroll() {
+    if (!typing() && (window.scrollX || window.scrollY)) window.scrollTo(0, 0);
   }
+  function resyncViewport() {
+    resetWindowScroll();
+    setTimeout(resetWindowScroll, 150);
+    setTimeout(resetWindowScroll, 450);
+  }
+  window.addEventListener("scroll", resetWindowScroll, { passive: true });
   document.addEventListener("focusout", (e) => {
     if (e.target.matches && e.target.matches("input, textarea")) resyncViewport();
   });
@@ -1220,7 +1225,7 @@
 
   // ----- めくる画面 -----
   function renderCardStudy() {
-    window.scrollTo(0, 0);
+    scroller.scrollTop = 0;
     const total = deck.list.length;
     const head = `
       <div class="study-bar">
@@ -1562,7 +1567,7 @@
   }
 
   function renderQuestion(previousTap) {
-    window.scrollTo(0, 0);
+    scroller.scrollTop = 0;
     if (quiz.i >= quiz.qs.length) return renderQuizResult();
     const q = quiz.qs[quiz.i];
     badgeEl.textContent = `Q ${quiz.i + 1} / ${quiz.qs.length}`;

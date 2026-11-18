@@ -84,11 +84,16 @@
 html, body {
   margin: 0;
   height: 100%;
-  /* ブラウザのスワイプ「戻る」・引っ張り更新を抑止 */
+  /* ページ全体はスクロールさせない（中身は .scroller の中だけで動かす）。
+     ブラウザのスワイプ「戻る」・引っ張り更新も抑止 */
+  overflow: hidden;
   overscroll-behavior: none;
 }
 
 body {
+  /* iOS のホーム画面アプリでは、ページの高さが画面より短いと下端に帯が出るため、
+     ページ自体は画面より少しだけ高くしておく（スクロールはしない） */
+  min-height: calc(100% + var(--safe-t) + 1px);
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
@@ -96,11 +101,30 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
-  touch-action: manipulation;
-  overflow-x: hidden;
+  /* ピンチやダブルタップで拡大しない（拡大すると上のバーやドックが画面からずれる） */
+  touch-action: pan-x pan-y;
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* 画面の中身は、この全画面の箱の中だけでスクロールする。
+   ページ全体（window）をスクロールすると、iOS のホーム画面アプリで上のバー・ドック・背景など
+   position: fixed の要素が、スクロールしていた分だけ下にずれたまま残ることがあるため */
+.scroller {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--over) * -1);
+  z-index: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  scroll-padding-block: calc(var(--safe-t) + var(--top-h) + 20px) calc(var(--over) + var(--safe-b) + 78px);
+}
+body.drawer-open .scroller, body.menu-open .scroller, body:has(.sheet-wrap.open) .scroller { overflow-y: hidden; }
 
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 input { font: inherit; color: inherit; -webkit-user-select: text; user-select: text; }
@@ -287,11 +311,8 @@ input { font: inherit; color: inherit; -webkit-user-select: text; user-select: t
 /* ---------- メイン ---------- */
 .view {
   position: relative;
-  z-index: 1;
-  /* 中身が短い画面でも必ず少しだけスクロールできる高さにする。
-     iOS のホーム画面アプリはスクロールしないページだと下端に帯が出るため */
-  min-height: calc(100% + var(--safe-t) + 1px);
-  padding: calc(var(--safe-t) + var(--top-h) + 24px) var(--gutter) calc(var(--safe-b) + 32px);
+  /* .scroller は画面の下へ --over だけはみ出しているので、そのぶん下に余白をとる */
+  padding: calc(var(--safe-t) + var(--top-h) + 24px) var(--gutter) calc(var(--over) + var(--safe-b) + 32px);
   max-width: 640px;
   margin: 0 auto;
 }
@@ -1135,7 +1156,6 @@ body.dragging .drawer-nav li, body.dragging .drawer-subj { animation: none; }
 .subj-pill svg { transition: transform 0.4s var(--spring); }
 body.menu-open .subj-pill svg { transform: rotate(180deg); }
 .menu-scrim, .scrim { touch-action: none; }
-body.drawer-open, body.menu-open, body:has(.sheet-wrap.open) { overflow: hidden; }
 .menu-scrim { position: fixed; inset: 0; z-index: 44; display: none; }
 body.menu-open .menu-scrim { display: block; }
 .subj-menu {
@@ -1463,7 +1483,7 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
   display: grid;
   grid-template-columns: repeat(var(--slots), minmax(0, 1fr));
   padding: var(--lip);
-  touch-action: pan-y pinch-zoom;
+  touch-action: pan-y;
   background: linear-gradient(160deg, #ffffff23, transparent 43%, #b0cfff19), var(--dock-base);
   box-shadow: inset 0 1px 1px var(--selection-rim), inset 0 -1px 1px var(--selection-edge),
     0 3px 6px #15264221, 0 12px 30px -7px #111c3e55;
@@ -1526,8 +1546,7 @@ body.menu-open .subj-menu .subj-opt { animation: navIn 0.45s var(--spring) both;
 .dock .ico { width: 18px; height: 18px; }
 .dock button:active .ico { transform: scale(.92); }
 .dock button:focus-visible { outline: 2px solid currentColor; outline-offset: -4px; }
-.view:not([data-page="cards"]):not([data-page="quiz"]) { padding-bottom: calc(var(--safe-b) + 96px); }
-html { scroll-padding-block: calc(var(--safe-t) + var(--top-h) + 20px) calc(var(--safe-b) + 78px); }
+.view:not([data-page="cards"]):not([data-page="quiz"]) { padding-bottom: calc(var(--over) + var(--safe-b) + 96px); }
 .toast { bottom: calc(var(--safe-b) + 78px); }
 
 /* 光と奥のカードだけを動かし、数値と本文は読める位置に保つ。 */

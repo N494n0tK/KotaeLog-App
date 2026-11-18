@@ -1,9 +1,9 @@
 // 初回のインストールでオフライン起動に必要な一式を保存する。
 const scope = self.registration.scope;
 const prefix = `kotaelog:${scope}:`;
-const cacheName = prefix + "23";
+const cacheName = prefix + "24";
 const shell = [
-  "index.html", "css/style.css?v=22", "js/data.js?v=3", "js/app.js?v=23",
+  "index.html", "css/style.css?v=23", "js/data.js?v=3", "js/app.js?v=24",
   "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png",
 ].map(path => new URL(path, scope).href);
 const index = shell[0];
@@ -19,7 +19,9 @@ self.addEventListener("install", event => {
 self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(key => key.startsWith(prefix) && key !== cacheName).map(key => caches.delete(key)));
+    // 以前の版の Service Worker が使っていたキャッシュ（kotaelog-v2）も消す
+    const old = key => (key.startsWith(prefix) && key !== cacheName) || key === "kotaelog-v2";
+    await Promise.all(keys.filter(old).map(key => caches.delete(key)));
     await self.clients.claim();
   })());
 });
